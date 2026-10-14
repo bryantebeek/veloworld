@@ -3,8 +3,7 @@
 // worlds a glowing channel beside the road, veins in the walls, a cavern with a lavafall,
 // stalactites and a shaft of daylight.
 import * as THREE from 'three';
-import { U } from './environment.js';
-import { lavaTexture } from './volcano.js';
+import { U, TRI_GLSL, WP_VERT } from './environment.js';
 
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -25,7 +24,7 @@ export const ROAD_HALF = 6;
 // cross-section of the tube at chamber factor ch (0 = tunnel, 1 = cavern)
 export const tunnelSize = (ch) => ({ w: 12 + 16 * ch, h: 9 + 17 * ch });
 
-export function buildTunnels({ scene, C, M, runs, chamber, lava, canvasTex, rand }) {
+export function buildTunnels({ scene, C, M, runs, chamber, lava, lavaMaps, rockMaps, canvasTex, rand }) {
   const NA = 24, NF = 8, P = NA + 1 + NF - 1;
   const pos = [], col = [], glow = [], idx = [], lamps = [], lavaLights = [], ceil = [];
   const color = new THREE.Color(), tmp = new THREE.Vector3();
@@ -84,12 +83,20 @@ export function buildTunnels({ scene, C, M, runs, chamber, lava, canvasTex, rand
   geo.setAttribute('glow', new THREE.Float32BufferAttribute(glow, 1));
   geo.setIndex(idx);
   geo.computeVertexNormals();
-  const rockMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, flatShading: true, side: THREE.DoubleSide, shadowSide: THREE.DoubleSide });
+  // photo basalt projected triplanar (normal faces the viewer: walls are seen from inside), glowing veins on top
+  const rockMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, side: THREE.DoubleSide, shadowSide: THREE.DoubleSide });
   rockMat.onBeforeCompile = (sh) => {
-    sh.uniforms.uTime = U.time;
-    sh.vertexShader = 'attribute float glow; varying float vGlow; varying vec3 vRP;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n vGlow = glow; vRP = position;');
-    sh.fragmentShader = 'uniform float uTime; varying float vGlow; varying vec3 vRP;\n' + sh.fragmentShader.replace('#include <emissivemap_fragment>',
-      '#include <emissivemap_fragment>\n totalEmissiveRadiance += vec3(1.0, 0.3, 0.05) * vGlow * vGlow * vGlow * (1.6 + 0.6 * sin(uTime * 1.7 + vRP.x * 0.2 + vRP.z * 0.13));');
+    Object.assign(sh.uniforms, { uTime: U.time, tpA: { value: rockMaps.color }, tpN: { value: rockMaps.normal } });
+    sh.vertexShader = 'attribute float glow; varying float vGlow; varying vec3 vRP; varying vec3 vWP; varying vec3 vWN;\n' + sh.vertexShader
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n vGlow = glow; vRP = position;')
+      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>' + WP_VERT);
+    sh.fragmentShader = 'uniform float uTime; uniform sampler2D tpA, tpN; varying float vGlow; varying vec3 vRP; varying vec3 vWP; varying vec3 vWN;' + TRI_GLSL + '\n' + sh.fragmentShader
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        vec3 tpNn = normalize(vWN) * (gl_FrontFacing ? 1.0 : -1.0), tpw = tpW(tpNn);
+        diffuseColor.rgb *= tpTriA(tpA, vWP, 7.0, tpw) * 2.2;
+        vec3 tpNrm = tpTriN(tpN, vWP, 7.0, tpNn, tpw);`)
+      .replace('#include <normal_fragment_maps>', 'normal = normalize((viewMatrix * vec4(tpNrm, 0.0)).xyz);')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += vec3(1.0, 0.3, 0.05) * vGlow * vGlow * vGlow * (1.6 + 0.6 * sin(uTime * 1.7 + vRP.x * 0.2 + vRP.z * 0.13));');
   };
   rockMat.customProgramCacheKey = () => 'tunnel-rock';
   const rock = new THREE.Mesh(geo, rockMat);
@@ -108,8 +115,8 @@ export function buildTunnels({ scene, C, M, runs, chamber, lava, canvasTex, rand
   const fx = [];
   if (lava) {
     // lava channel beside the road (right-hand side), widening into a pool in the cavern
-    const lt = lavaTexture(canvasTex, rand, 0.2);
-    const lavaMat = new THREE.MeshStandardMaterial({ color: 0x120806, roughness: 0.85, emissive: 0xffffff, emissiveMap: lt, emissiveIntensity: 2.2, side: THREE.DoubleSide });
+    const lt = lavaMaps.emission.clone(), lc = lavaMaps.color.clone();
+    const lavaMat = new THREE.MeshStandardMaterial({ map: lc, roughness: 0.8, emissive: 0xffffff, emissiveMap: lt, emissiveIntensity: 2.6, side: THREE.DoubleSide });
     const lp = [], luv = [], li = [];
     for (const [start, len] of runs) {
       const b0 = lp.length / 3;
@@ -123,15 +130,15 @@ export function buildTunnels({ scene, C, M, runs, chamber, lava, canvasTex, rand
     lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3)); lg.setAttribute('uv', new THREE.Float32BufferAttribute(luv, 2));
     lg.setIndex(li); lg.computeVertexNormals();
     scene.add(new THREE.Mesh(lg, lavaMat));
-    fx.push((dt) => (lt.offset.y -= dt * 0.03));
+    fx.push((dt) => { lt.offset.y -= dt * 0.03; lc.offset.y = lt.offset.y; });
 
     // cavern set pieces around the chamber's centre
     const mid = ceil[Math.floor(ceil.length / 2)];
     if (mid) {
       const { f } = mid, { w, h } = tunnelSize(1), fwdX = -f.rz, fwdZ = f.rx;
       // lavafall pouring from a fissure in the far wall into the pool
-      const ft = lavaTexture(canvasTex, rand, 0.45); ft.repeat.set(1, 3);
-      const fall = new THREE.Mesh(new THREE.PlaneGeometry(8, h + 2, 1, 8), new THREE.MeshStandardMaterial({ color: 0x120806, emissive: 0xffffff, emissiveMap: ft, emissiveIntensity: 4, side: THREE.DoubleSide }));
+      const ft = lavaMaps.emission.clone(); ft.repeat.set(1, 3);
+      const fall = new THREE.Mesh(new THREE.PlaneGeometry(8, h + 2, 1, 8), new THREE.MeshStandardMaterial({ color: 0x120806, emissive: 0xffffff, emissiveMap: ft, emissiveIntensity: 4.5, side: THREE.DoubleSide }));
       const fx0 = f.x + f.rx * (w - 5) + fwdX * 30, fz0 = f.z + f.rz * (w - 5) + fwdZ * 30;
       fall.position.set(fx0, f.y + (h + 2) / 2 - 0.5, fz0);
       fall.lookAt(f.x + fwdX * 30, fall.position.y, f.z + fwdZ * 30);

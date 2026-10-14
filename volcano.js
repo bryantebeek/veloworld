@@ -62,12 +62,12 @@ function smoke(scene, tex, rand, o) {
   };
 }
 
-export function buildVolcanoFX({ scene, canvasTex, rand, rivers, crater, vents, getH, onEruption, onThunder }) {
+export function buildVolcanoFX({ scene, canvasTex, rand, rivers, crater, vents, getH, lavaMaps, onEruption, onThunder }) {
   // lava lake in the crater
-  const lakeTex = lavaTexture(canvasTex, rand, 0.55);
-  lakeTex.repeat.set(7, 7);
+  const lakeTex = lavaMaps.emission.clone(), lakeCol = lavaMaps.color.clone();
+  lakeTex.repeat.set(9, 9); lakeCol.repeat.set(9, 9);
   const lake = new THREE.Mesh(new THREE.CircleGeometry(crater.r, 72).rotateX(-Math.PI / 2),
-    new THREE.MeshStandardMaterial({ color: 0x120806, roughness: 0.8, emissive: 0xffffff, emissiveMap: lakeTex, emissiveIntensity: 4.5 }));
+    new THREE.MeshStandardMaterial({ map: lakeCol, roughness: 0.8, emissive: 0xffffff, emissiveMap: lakeTex, emissiveIntensity: 5 }));
   lake.position.set(0, crater.y, 0);
   scene.add(lake);
   const glow = new THREE.PointLight(0xff5a1e, 3.5, 700, 0);
@@ -75,8 +75,8 @@ export function buildVolcanoFX({ scene, canvasTex, rand, rivers, crater, vents, 
   scene.add(glow);
 
   // lava rivers: flat ribbons along the carved channels, crust flows downhill
-  const riverTex = lavaTexture(canvasTex, rand, 0.12);
-  const riverMat = new THREE.MeshStandardMaterial({ color: 0x120806, roughness: 0.9, emissive: 0xffffff, emissiveMap: riverTex, emissiveIntensity: 3.6, side: THREE.DoubleSide });
+  const riverTex = lavaMaps.emission.clone(), riverCol = lavaMaps.color.clone();
+  const riverMat = new THREE.MeshStandardMaterial({ map: riverCol, roughness: 0.85, emissive: 0xffffff, emissiveMap: riverTex, emissiveIntensity: 3.8, side: THREE.DoubleSide });
   const lavaPts = [];
   for (const pts of rivers) {
     const pos = [], uv = [], idx = [], A = 6;
@@ -151,8 +151,8 @@ export function buildVolcanoFX({ scene, canvasTex, rand, rivers, crater, vents, 
   const tmpV = V(0, 0, 0);
 
   const update = (dt, t, cam) => {
-    riverTex.offset.y -= dt * 0.035;
-    lakeTex.offset.set(Math.sin(t * 0.05) * 0.05, t * 0.004);
+    riverTex.offset.y -= dt * 0.035; riverCol.offset.y = riverTex.offset.y;
+    lakeTex.offset.set(Math.sin(t * 0.05) * 0.05, t * 0.004); lakeCol.offset.copy(lakeTex.offset);
     if (t > eNext) { eStart = t; eNext = t + 55 + rand() * 60; onEruption?.(); }
     const e = t - eStart, I = smooth(0, 1.2, e) * (1 - smooth(9, 15, e));
     if (I > 0) ashLevel = Math.min(1, ashLevel + dt * 0.08); else ashLevel = Math.max(0, ashLevel - dt * 0.02);

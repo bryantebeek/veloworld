@@ -1,10 +1,12 @@
 import * as THREE from 'three';
-import { Sky } from 'three/addons/objects/Sky.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { initBodies, createBody, poseBody } from './body.js';
 import { buildVolcanoFX, palmGeometries, deadTreeGeometry, spireGeometry } from './volcano.js';
-import { U, addWind, terrainMaterial, seaDepthTexture, waterMaterial, makeGrass, makeBirds } from './environment.js';
+import { U, addWind, terrainMaterial, triplanar, loadTextures, GradeShader, seaDepthTexture, waterMaterial, makeGrass, makeBirds } from './environment.js';
+import { leafClusterTexture, needleTexture, broadleafGeometry, pineGeometry, bushGeometry, rockGeometry } from './flora.js';
 import { buildTunnels, tunnelSize } from './tunnel.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -52,6 +54,8 @@ const powerFor = (r, v, grade, draft) => Math.max(0, v * resist(v, grade, r.mass
 
 // ============================================================ worlds
 // A world defines the route (polar radius + elevation), terrain height and colouring, atmosphere and flora.
+// layer compositing: paint layer i over the current weights with opacity a
+const over = (w, i, a) => { if (a <= 0) return; a = Math.min(1, a); for (let k = 0; k < w.length; k++) w[k] *= 1 - a; w[i] += a; };
 const rollers = (t) => 0.8 * Math.sin(t * Math.PI * 2 * 29) + 0.4 * Math.sin(t * Math.PI * 2 * 53 + 1);
 const angDist = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 const cone = (r) => 560 * Math.exp(-((r / 1000) ** 1.5)); // Fuego's volcano profile
@@ -77,17 +81,22 @@ const WORLDS = {
         if (m > 0) h += m * (160 + ridge(x / 1100, z / 1100) * 460);
         return h;
       },
-      color: (c, x, z, h, ny, d) => {
-        c.copy(G1).lerp(G2, clamp(0.5 + fbm(x / 110, z / 110, 3) * 1.4, 0, 1));
-        c.lerp(DRY, clamp(fbm(x / 420 + 9, z / 420, 2) * 1.6, 0, 0.55));
-        c.lerp(VERGE, smooth(16, 8, d) * 0.6);
-        c.lerp(SAND, smooth(3.2, 0.6, h));
-        c.lerp(ROCK, smooth(0.86, 0.66, ny));
-        c.lerp(SNOW, smooth(310, 370, h + fbm(x / 80, z / 80, 2) * 50) * smooth(0.55, 0.78, ny));
+      // layers: 0 grass, 1 soil, 2 cliff rock (triplanar), 3 beach sand, 4 snow; c = macro tint
+      layers: [{ tex: 'grass004', scale: 3.5, tint: 0xc4dcae, rough: 0.95 }, { tex: 'ground037', scale: 4, tint: 0xd8d0c4, rough: 0.9 }, { tex: 'rock051', scale: 9, rough: 0.8 }, { tex: 'ground054', scale: 5, tint: 0xf3e6c8, rough: 0.9 }, { tex: 'snow015', scale: 6, rough: 0.55 }],
+      color: (c, x, z, h, ny, d, lava, w) => {
+        w.fill(0); w[0] = 1;
+        over(w, 1, clamp(fbm(x / 160 + 4, z / 160, 3) * 2.2 - 0.25, 0, 0.8) + clamp(fbm(x / 25, z / 25, 2) * 2 - 0.35, 0, 0.5) + smooth(13, 8.5, d) * 0.7);
+        over(w, 3, smooth(3.2, 0.9, h));
+        over(w, 2, smooth(0.86, 0.66, ny));
+        over(w, 4, smooth(310, 370, h + fbm(x / 80, z / 80, 2) * 50) * smooth(0.55, 0.78, ny));
+        const dry = clamp(fbm(x / 420 + 9, z / 420, 2) * 2.2 + fbm(x / 45, z / 45, 2) * 0.8, 0, 0.75), v = 0.88 + fbm(x / 60, z / 60, 2) * 0.6 + fbm(x / 12, z / 12, 2) * 0.25;
+        c.setRGB(v * (1 + dry * 0.35), v * (1 + dry * 0.1), v * (1 - dry * 0.45));
       },
+      hdri: 'kloofendal_48d_partly_cloudy_puresky', skyYaw: 0, grassColor: 0x6c9a3a, foliage: [0x8fb85a, 0x5f8f38], needles: [0x4f7a3c, 0x36602e],
+      grade: { sat: 1.12, con: 1.07, vig: 0.24, gain: [1, 1, 0.98], lift: [0, 0, 0.01] },
       sky: { elev: 36, azim: 205, turbidity: 2.6, rayleigh: 1.1, mie: 0.004, mieG: 0.86 },
-      fog: [0xb9d2e6, 0.00019], exposure: 0.75, env: 0.55, hemi: [0xd8ecff, 0x56663a, 0.7], sun: [0xfff1dc, 3.4],
-      water: 0x175d84, verge: 0x6f7f45, clouds: [0.6, 0.15], mini: [[0, '#2b6f9a'], [0.35, '#3c6a35'], [1, '#2b3b2a']],
+      fog: [0xb9d2e6, 0.00014], exposure: 0.68, env: 1, hemi: [0xd8ecff, 0x56663a, 0.25], sun: [0xffffff, 3.2],
+      water: 0x175d84, verge: 0x8e9468, mini: [[0, '#2b6f9a'], [0.35, '#3c6a35'], [1, '#2b3b2a']],
       sea: { deep: 0x0f4d73, shallow: 0x3fb8b0 }, sprint: [0.915, 0.972], pu: [0.12, 0.63],
       birds: { color: 0x2a2a2e, flocks: [[0, 70, 0, 300, 14, 0.05], [1500, 120, -900, 200, 10, -0.07], [-1300, 150, 1100, 180, 9, 0.06]] }, // x,y,z,radius,n,speed
     };
@@ -116,23 +125,27 @@ const WORLDS = {
         if (r < 340) h += (WORLD_CRATER_FLOOR + fbm(x / 60, z / 60, 2) * 8 - h) * smooth(310, 175, r); // crater
         return h - smooth(2150, 2750, r) * 110; // island edge drops into the sea
       },
-      color: (c, x, z, h, ny, d, lava) => {
-        c.copy(BASALT).lerp(RUST, clamp(fbm(x / 300 + 3, z / 300, 3) * 1.8 + 0.2, 0, 0.6));
-        c.lerp(tmp.copy(JUNGLE).lerp(JUNGLE2, clamp(0.5 + fbm(x / 120, z / 120, 3) * 1.5, 0, 1)), smooth(120, 45, h + fbm(x / 160, z / 160, 3) * 60) * smooth(2.5, 7, h) * clamp(0.55 + fbm(x / 230, z / 230, 3) * 1.8, 0, 1));
-        c.lerp(ASH, smooth(150, 330, h + fbm(x / 90, z / 90, 2) * 50) * 0.8);
-        c.lerp(DARK, smooth(0.82, 0.6, ny));
-        c.lerp(SAND, smooth(4, 0.6, h));
-        c.lerp(SCORCH, smooth(45, 10, lava));
-        c.lerp(EMBER, smooth(16, 5, lava) * 0.7);
-        c.lerp(VERGE, smooth(16, 8, d) * 0.55);
+      // layers: 0 jungle grass, 1 volcanic soil, 2 basalt (triplanar), 3 black sand, 4 ash
+      layers: [{ tex: 'grass004', scale: 3.5, tint: 0xa6c48c, rough: 0.95 }, { tex: 'ground037', scale: 4, tint: 0x8c6c5a, rough: 0.92 }, { tex: 'rock058', scale: 8, tint: 0xc8aa98, rough: 0.75 }, { tex: 'ground054', scale: 5, tint: 0x3c3836, rough: 0.85 }, { tex: 'ground054', scale: 7, tint: 0x8a8380, rough: 0.95 }],
+      color: (c, x, z, h, ny, d, lava, w) => {
+        w.fill(0); w[1] = 1;
+        over(w, 0, smooth(120, 45, h + fbm(x / 160, z / 160, 3) * 60) * smooth(2.5, 7, h) * clamp(0.55 + fbm(x / 230, z / 230, 3) * 1.8, 0, 1));
+        over(w, 4, smooth(150, 330, h + fbm(x / 90, z / 90, 2) * 50) * 0.85);
+        over(w, 3, smooth(4, 0.8, h));
+        over(w, 2, smooth(0.84, 0.62, ny) + smooth(30, 6, lava) * 0.8);
+        over(w, 1, smooth(13, 8.5, d) * 0.5);
+        const v = 0.85 + fbm(x / 70, z / 70, 2) * 0.6 + fbm(x / 12, z / 12, 2) * 0.25, burn = smooth(45, 10, lava), glow = smooth(14, 4, lava);
+        c.setRGB(v * (1 - burn * 0.6) + glow * 0.9, v * (1 - burn * 0.7) + glow * 0.15, v * (1 - burn * 0.75));
       },
+      hdri: 'qwantani_sunset_puresky', skyYaw: 0, grassColor: 0x58802e, foliage: [0x5f9a3a, 0x3f7426], needles: [0x4a6a34, 0x34522a],
+      grade: { sat: 1.08, con: 1.1, vig: 0.32, gain: [1.04, 0.99, 0.94], lift: [0.012, 0.004, 0] },
       rivers: [[2.3, 1580, 1], [3.2, 1640, 2], [4.05, 1560, 3]], // [bearing, end radius, seed]
       sea: { deep: 0x0a2d45, shallow: 0x2a8f8a }, sprint: [0.46, 0.51], pu: [0.24, 0.68],
       birds: { color: 0x1c1a1a, flocks: [[0, 80, 2150, 160, 10, 0.06], [-2150, 70, 0, 140, 9, -0.05], [0, 90, -2150, 170, 11, 0.05], [1600, 260, 900, 220, 8, -0.04]] },
       crater: { y: WORLD_CRATER_FLOOR + 3, r: 182 },
       sky: { elev: 7, azim: 250, turbidity: 10, rayleigh: 3, mie: 0.003, mieG: 0.8 },
-      fog: [0x9c7a6c, 0.00026], exposure: 0.85, env: 0.5, hemi: [0xffc8a0, 0x3a2a24, 0.8], sun: [0xffa868, 3.2],
-      water: 0x0d3550, verge: 0x3b3430, clouds: [0.05, 0.6], bloom: [0.6, 0.45, 2.2], // [strength, radius, HDR threshold]
+      fog: [0x9c7a6c, 0.00022], exposure: 0.95, env: 1, hemi: [0xffc8a0, 0x3a2a24, 0.3], sun: [0xffffff, 3],
+      water: 0x0d3550, verge: 0x6a5a50, bloom: [0.6, 0.45, 2.2], // [strength, radius, HDR threshold]
       mini: [[0, '#ff7a2a'], [0.08, '#7a2a12'], [0.16, '#3a302c'], [0.55, '#2e3a25'], [0.72, '#123a52'], [1, '#0b2a3d']],
     };
   })(),
@@ -250,42 +263,48 @@ function canvasTex(w, h, draw, repeat = false, srgb = true) {
   return t;
 }
 
-// sky, sun, fog
-const SK = WORLD.sky;
-const sunDir = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - SK.elev), THREE.MathUtils.degToRad(SK.azim));
-const sky = new Sky();
-sky.scale.setScalar(10000);
-sky.material.uniforms.turbidity.value = SK.turbidity;
-sky.material.uniforms.rayleigh.value = SK.rayleigh;
-sky.material.uniforms.mieCoefficient.value = SK.mie;
-sky.material.uniforms.mieDirectionalG.value = SK.mieG;
-sky.material.uniforms.sunPosition.value.copy(sunDir);
-{
-  const pmrem = new THREE.PMREMGenerator(renderer), envScene = new THREE.Scene();
-  envScene.add(sky);
-  scene.environment = pmrem.fromScene(envScene).texture;
-  scene.add(sky);
-}
-scene.environmentIntensity = WORLD.env;
+// sky, sun, fog: an HDRI photo sky lights everything; sun direction, sun tint and haze colour are measured from it
+const sunDir = new THREE.Vector3(0, 1, 0);
 scene.fog = new THREE.FogExp2(...WORLD.fog);
 const hemi = new THREE.HemisphereLight(...WORLD.hemi);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(...WORLD.sun);
 sun.castShadow = true;
-sun.shadow.mapSize.setScalar(LOW ? 1024 : 2048);
-Object.assign(sun.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60, near: 10, far: 900 });
-sun.shadow.bias = -0.0004;
-sun.shadow.normalBias = 0.05;
+sun.shadow.mapSize.setScalar(LOW ? 1024 : TOUCH ? 2048 : 4096);
+Object.assign(sun.shadow.camera, { left: -45, right: 45, top: 45, bottom: -45, near: 10, far: 900 });
+sun.shadow.bias = -0.0003;
+sun.shadow.normalBias = 0.04;
 scene.add(sun, sun.target);
-// bloom (worlds that glow): render to an MSAA half-float target, OutputPass does tone mapping
-let composer = null;
-if (WORLD.bloom && !LOW) {
-  const pr = renderer.getPixelRatio();
-  composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth * pr, innerHeight * pr, { type: THREE.HalfFloatType, samples: 4 }));
-  composer.addPass(new RenderPass(scene, camera));
-  composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), ...WORLD.bloom));
-  composer.addPass(new OutputPass());
+async function setupSky() {
+  const hdr = await new RGBELoader().loadAsync(`assets/hdri/${WORLD.hdri}.hdr`);
+  hdr.mapping = THREE.EquirectangularReflectionMapping;
+  const { data, width: w, height: h } = hdr.image, half = (i) => THREE.DataUtils.fromHalfFloat(data[i]);
+  let best = -1, bi = 0;
+  for (let y = 0; y < h / 2; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4, l = half(i) + half(i + 1) + half(i + 2); if (l > best) { best = l; bi = i; } }
+  const px = (bi / 4) % w, py = Math.floor(bi / 4 / w), phi = ((px + 0.5) / w - 0.5) * Math.PI * 2, th = (0.5 - (py + 0.5) / h) * Math.PI;
+  sunDir.set(Math.cos(th) * Math.cos(phi), Math.sin(th), Math.cos(th) * Math.sin(phi)).applyAxisAngle(UP, WORLD.skyYaw);
+  const m = Math.max(half(bi), half(bi + 1), half(bi + 2));
+  sun.color.setRGB(half(bi) / m, half(bi + 1) / m, half(bi + 2) / m).lerp(new THREE.Color(1, 1, 1), 0.35);
+  const fog = [0, 0, 0], row = Math.floor(h / 2) - 3; // average sky colour just above the horizon becomes the haze
+  for (let x = 0; x < w; x++) for (let c = 0; c < 3; c++) fog[c] += half((row * w + x) * 4 + c) / w;
+  scene.fog.color.setRGB(...fog.map((v) => Math.min(v * 0.9, 1.4)));
+  FOG_BASE.copy(scene.fog.color);
+  scene.background = hdr;
+  scene.backgroundRotation.y = scene.environmentRotation.y = WORLD.skyYaw;
+  scene.environment = new THREE.PMREMGenerator(renderer).fromEquirectangular(hdr).texture;
+  scene.environmentIntensity = WORLD.env;
 }
+// post: MSAA half-float render, optional bloom, tone mapping, then a display-space colour grade
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio(), { type: THREE.HalfFloatType, samples: LOW ? 0 : 4 }));
+composer.addPass(new RenderPass(scene, camera));
+if (!LOW) composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), ...(WORLD.bloom ?? [0.18, 0.4, 3])));
+composer.addPass(new OutputPass());
+{
+  const grade = new ShaderPass(GradeShader), g = WORLD.grade, u = grade.uniforms;
+  u.uSat.value = g.sat; u.uCon.value = g.con; u.uVig.value = g.vig; u.uGain.value.set(...g.gain); u.uLift.value.set(...g.lift);
+  composer.addPass(grade);
+}
+let TX = null; // loaded photo textures (assets/tex), keyed by file stem
 
 // ============================================================ terrain
 const T_SIZE = 6400, T_SEG = 640, CELL = T_SIZE / T_SEG, TN = T_SEG + 1, HALF = T_SIZE / 2, ROAD_R = 150;
@@ -362,32 +381,45 @@ function buildTerrain() {
     pos.setY(k, tH[iz * TN + ix]);
   }
   geo.computeVertexNormals();
-  const nrm = geo.attributes.normal, col = new Float32Array(pos.count * 3), c = new THREE.Color();
+  const nrm = geo.attributes.normal, col = new Float32Array(pos.count * 3), sa = new Float32Array(pos.count * 4), sb = new Float32Array(pos.count), c = new THREE.Color(), w = new Float32Array(5);
+  const gc = new THREE.Color(WORLD.grassColor);
   for (let k = 0; k < pos.count; k++) {
     const x = pos.getX(k), z = pos.getZ(k), h = pos.getY(k), ny = nrm.getY(k), d = roadDist(x, z);
-    WORLD.color(c, x, z, h, ny, d, lavaDist(x, z));
+    WORLD.color(c, x, z, h, ny, d, lavaDist(x, z), w);
     col[k * 3] = c.r; col[k * 3 + 1] = c.g; col[k * 3 + 2] = c.b;
-    // grass: green-dominant ground off the road, not too steep, above the waterline
-    const g = cellOf(x, z) * 4, dens = clamp((c.g - Math.max(c.r, c.b)) * 9, 0, 1) * smooth(8, 11, d) * smooth(1.5, 2.5, h) * smooth(0.78, 0.9, ny);
-    grassTint[g] = clamp(c.r * 1.2, 0, 1) * 255; grassTint[g + 1] = clamp(c.g * 1.25, 0, 1) * 255; grassTint[g + 2] = clamp(c.b * 1.1, 0, 1) * 255; grassTint[g + 3] = dens * 255;
+    sa.set(w.subarray(0, 4), k * 4); sb[k] = w[4];
+    // grass blades where the grass layer dominates, off the road, not too steep, above the waterline
+    const g = cellOf(x, z) * 4, dens = smooth(0.35, 0.8, w[0]) * smooth(8, 11, d) * smooth(1.5, 2.5, h) * smooth(0.78, 0.9, ny);
+    grassTint[g] = clamp(gc.r * c.r, 0, 1) * 255; grassTint[g + 1] = clamp(gc.g * c.g, 0, 1) * 255; grassTint[g + 2] = clamp(gc.b * c.b, 0, 1) * 255; grassTint[g + 3] = dens * 255;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  const mesh = new THREE.Mesh(geo, terrainMaterial(canvasTex, rand));
+  geo.setAttribute('splatA', new THREE.BufferAttribute(sa, 4));
+  geo.setAttribute('splatB', new THREE.BufferAttribute(sb, 1));
+  const mesh = new THREE.Mesh(geo, terrainMaterial(TX, WORLD.layers));
   mesh.receiveShadow = true;
   scene.add(mesh);
 }
 
 // ============================================================ road
 function buildRoad() {
-  const tex = canvasTex(512, 1024, (g, w, h) => {
-    g.fillStyle = '#3c3f45'; g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 50000; i++) { const v = (35 + rand() * 60) | 0; g.fillStyle = `rgba(${v},${v},${v + 4},${rand() * 0.6})`; g.fillRect(rand() * w, rand() * h, 2, 2); }
-    g.fillStyle = 'rgba(0,0,0,0.13)';
-    for (const x of [0.2, 0.34, 0.66, 0.8]) g.fillRect(x * w - 20, 0, 40, h);
-    g.fillStyle = '#ecebe4';
-    g.fillRect(w * 0.03, 0, w * 0.022, h); g.fillRect(w * 0.948, 0, w * 0.022, h);
-    g.fillRect(w * 0.493, 0, w * 0.014, h * 0.42);
-  }, true);
+  // painted lines as their own thin ribbons (sharp at any distance); dashes come from an alpha-tested texture
+  const dash = canvasTex(4, 64, (g, w, h) => { g.fillStyle = '#fff'; g.fillRect(0, 0, w, h * 0.45); }, true);
+  const lineMat = new THREE.MeshStandardMaterial({ color: 0xeeeee6, roughness: 0.55, polygonOffset: true, polygonOffsetFactor: -4 });
+  const dashMat = new THREE.MeshStandardMaterial({ color: 0xeeeee6, roughness: 0.55, map: dash, alphaTest: 0.5, polygonOffset: true, polygonOffsetFactor: -4 });
+  for (const [lat, wd, mat] of [[-ROAD_W / 2 + 0.45, 0.2, lineMat], [ROAD_W / 2 - 0.45, 0.2, lineMat], [0, 0.14, dashMat]]) {
+    const lp = [], luv = [], li = [];
+    for (let i = 0; i <= M; i++) {
+      const p = C.PSI[i], rx = -Math.cos(p), rz = Math.sin(p), v = (i * L) / M / 12;
+      for (const o of [lat - wd / 2, lat + wd / 2]) { lp.push(C.X[i] + rx * o, C.Y[i] + 0.06, C.Z[i] + rz * o); luv.push(0.5, v); }
+      if (i < M) { const a2 = i * 2; li.push(a2, a2 + 1, a2 + 2, a2 + 1, a2 + 3, a2 + 2); }
+    }
+    const lg = new THREE.BufferGeometry();
+    lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3)); lg.setAttribute('uv', new THREE.Float32BufferAttribute(luv, 2));
+    lg.setIndex(li); lg.computeVertexNormals();
+    const m = new THREE.Mesh(lg, mat); m.receiveShadow = true; scene.add(m);
+  }
+  const tex = TX.asphalt033_color;
+  for (const t of [TX.asphalt033_color, TX.asphalt033_normal]) t.repeat.set(4, 5.33); // ~3 m tiles
   const pos = [], uv = [], idx = [], vpos = [], vidx = [];
   for (let i = 0; i <= M; i++) {
     const p = C.PSI[i], rx = -Math.cos(p), rz = Math.sin(p), x = C.X[i], y = C.Y[i], z = C.Z[i], v = (i * L) / M / 16;
@@ -404,12 +436,12 @@ function buildRoad() {
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   geo.setIndex(idx); geo.computeVertexNormals();
-  const road = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.82, metalness: 0.02 }));
+  const road = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, normalMap: TX.asphalt033_normal, color: 0x8a8a8a, roughness: 0.88 }));
   road.receiveShadow = true;
   const vg = new THREE.BufferGeometry();
   vg.setAttribute('position', new THREE.Float32BufferAttribute(vpos, 3));
   vg.setIndex(vidx); vg.computeVertexNormals();
-  const verge = new THREE.Mesh(vg, new THREE.MeshStandardMaterial({ color: WORLD.verge, roughness: 1 }));
+  const verge = new THREE.Mesh(vg, triplanar(new THREE.MeshStandardMaterial({ color: WORLD.verge, roughness: 1 }), TX.ground037_color, TX.ground037_normal, 4, 'verge'));
   verge.receiveShadow = true;
   scene.add(road, verge);
 }
@@ -449,6 +481,18 @@ function instanced(geo, mat, list, shadow = true, tint = true) {
   return m;
 }
 
+// shared foliage materials: bark (PBR), leaf-cluster and needle cards (alpha-tested, wind, per-tree tint)
+function foliageKit() {
+  const bark = addWind(new THREE.MeshStandardMaterial({ map: TX.bark014_color, normalMap: TX.bark014_normal, roughness: 0.95 }), 0.004, 'bark', 0);
+  const leaves = addWind(new THREE.MeshStandardMaterial({ map: leafClusterTexture(TX.leafset009, rand), alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.75 }), 0.004, 'leaves', 0.5, { tints: WORLD.foliage, noFlip: true });
+  const needles = addWind(new THREE.MeshStandardMaterial({ map: needleTexture(rand), alphaTest: 0.4, side: THREE.DoubleSide, roughness: 0.8 }), 0.004, 'needles', 0.3, { tints: WORLD.needles, noFlip: true });
+  return { bark, leaves, needles };
+}
+const rockMaterial = (tex) => triplanar(new THREE.MeshStandardMaterial({ roughness: 0.85 }), TX[`${tex}_color`], TX[`${tex}_normal`], 6, tex);
+// three boulder shapes so scattered rocks don't repeat
+function rockVariants(list, mat) {
+  for (let v = 0; v < 3; v++) instanced(rockGeometry(v * 7.3 + 1), mat, list.filter((_, i) => i % 3 === v));
+}
 function buildVegetation() { if (WORLD.id === 'fuego') plantFuego(); else plantVerde(); }
 
 function plantFuego() {
@@ -479,15 +523,15 @@ function plantFuego() {
     const s = rr(3, 9);
     spires.push({ x, y: h - 1, z, s, sy: s * rr(2.2, 4.5), ry: rr(0, 6), rx: rr(-0.12, 0.12), c: pick([0x2a2524, 0x342d2a, 0x231f1e]) });
   }
-  const palm = palmGeometries(canvasTex), rockMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, flatShading: true });
-  addWind(palm.trunkMat, 0.0035, 'palm-trunk', 0); addWind(palm.crownMat, 0.0035, 'palm-crown');
+  const palm = palmGeometries(canvasTex), F = foliageKit(), rockMat = rockMaterial('rock058');
+  palm.trunkMat.map = TX.bark012_color; palm.trunkMat.normalMap = TX.bark012_normal;
+  addWind(palm.trunkMat, 0.0035, 'palm-trunk', 0); addWind(palm.crownMat, 0.0035, 'palm-crown', 0.4, { tints: [0x9ccf5a, 0x6f9a38], noFlip: true });
   instanced(palm.trunk, palm.trunkMat, palms, true, false);
-  instanced(palm.crown, palm.crownMat, palms);
-  instanced(new THREE.CylinderGeometry(0.14, 0.22, 2.2, 6).translate(0, 1.1, 0), new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 1 }), jungle);
-  instanced(mergeGeometries([new THREE.IcosahedronGeometry(1.35, 1).translate(0, 2.9, 0), new THREE.IcosahedronGeometry(0.95, 1).translate(0.6, 3.5, 0.3), new THREE.IcosahedronGeometry(0.9, 1).translate(-0.6, 3.3, -0.2)]), addWind(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, flatShading: true }), 0.006, 'jungle'), jungle);
-  instanced(deadTreeGeometry(), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true }), dead);
-  instanced(new THREE.IcosahedronGeometry(0.9, 1), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true }), bushes);
-  instanced(new THREE.DodecahedronGeometry(1, 0), rockMat, rocks);
+  instanced(palm.crown, palm.crownMat, palms, true, false);
+  instanced(broadleafGeometry(rand), [F.bark, F.leaves], jungle.map((t) => ({ ...t, s: t.s * 0.55 })), true, false);
+  instanced(deadTreeGeometry(), new THREE.MeshStandardMaterial({ map: TX.bark014_color, normalMap: TX.bark014_normal, color: 0x3a302a, roughness: 1 }), dead, true, false);
+  instanced(bushGeometry(rand), [F.bark, F.leaves], bushes, true, false);
+  rockVariants(rocks, rockMat);
   instanced(spireGeometry(rand), rockMat, spires);
 }
 
@@ -514,16 +558,11 @@ function plantVerde() {
     const s = rr(0.4, d > 200 ? 9 : 2.2);
     rocks.push({ x, y: h - s * 0.3, z, s, sy: s * rr(0.5, 0.9), sx: s * rr(0.8, 1.4), ry: rr(0, 6), rx: rr(-0.3, 0.3), c: pick([0x8a857c, 0x7a756d, 0x9b958a]) });
   }
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5b4330, roughness: 1 });
-  const leafMat = addWind(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true }), 0.006, 'leaf');
-  const pineLeaf = mergeGeometries([new THREE.ConeGeometry(1.15, 1.9, 8).translate(0, 2.0, 0), new THREE.ConeGeometry(0.9, 1.6, 8).translate(0, 2.9, 0), new THREE.ConeGeometry(0.6, 1.4, 8).translate(0, 3.7, 0)]);
-  const broadLeaf = mergeGeometries([new THREE.IcosahedronGeometry(1.35, 1).translate(0, 2.9, 0), new THREE.IcosahedronGeometry(0.95, 1).translate(0.6, 3.5, 0.3), new THREE.IcosahedronGeometry(0.9, 1).translate(-0.6, 3.3, -0.2)]);
-  instanced(new THREE.CylinderGeometry(0.12, 0.2, 1.4, 6).translate(0, 0.7, 0), trunkMat, pines);
-  instanced(pineLeaf, leafMat, pines);
-  instanced(new THREE.CylinderGeometry(0.14, 0.22, 2.2, 6).translate(0, 1.1, 0), trunkMat, broad);
-  instanced(broadLeaf, leafMat, broad);
-  instanced(new THREE.IcosahedronGeometry(0.9, 1), leafMat, bushes);
-  instanced(new THREE.DodecahedronGeometry(1, 0), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, flatShading: true }), rocks);
+  const F = foliageKit();
+  instanced(pineGeometry(rand), [F.bark, F.needles], pines.map((t) => ({ ...t, s: t.s * 0.42 })), true, false);
+  instanced(broadleafGeometry(rand), [F.bark, F.leaves], broad.map((t) => ({ ...t, s: t.s * 0.55 })), true, false);
+  instanced(bushGeometry(rand), [F.bark, F.leaves], bushes, true, false);
+  rockVariants(rocks, rockMaterial('rock051'));
 }
 
 function bannerTex(text, bg, pill, fg, pattern) {
@@ -632,23 +671,6 @@ function updateCrowd(t) {
     body.setMatrixAt(i, o.matrix); head.setMatrixAt(i, o.matrix);
   });
   body.instanceMatrix.needsUpdate = head.instanceMatrix.needsUpdate = true;
-}
-
-let clouds;
-function buildClouds() {
-  const tex = canvasTex(128, 128, (g, w) => { const gr = g.createRadialGradient(w / 2, w / 2, 0, w / 2, w / 2, w / 2); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.5, 'rgba(255,255,255,.55)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(0, 0, w, w); });
-  clouds = new THREE.Group();
-  for (let i = 0; i < 46; i++) {
-    const a = rand() * 6.28, r = rr(1200, 5200), cx = Math.cos(a) * r, cz = Math.sin(a) * r, cy = rr(650, 1100);
-    for (let j = 0, n = 5 + (rand() * 6) | 0; j < n; j++) {
-      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, fog: false, depthWrite: false, transparent: true, opacity: rr(0.55, 0.9), color: new THREE.Color().setHSL(WORLD.clouds[0], WORLD.clouds[1], rr(0.82, 0.98)) }));
-      const s = rr(260, 560);
-      sp.scale.set(s * 1.6, s * 0.75, 1);
-      sp.position.set(cx + rr(-300, 300), cy + rr(-40, 60), cz + rr(-200, 200));
-      clouds.add(sp);
-    }
-  }
-  scene.add(clouds);
 }
 
 // ============================================================ riders
@@ -1451,7 +1473,6 @@ function loop() {
   sun.target.position.copy(focus);
   sun.position.copy(focus).addScaledVector(sunDir, 500);
   if (waterTex) waterTex.offset.set(elapsed * 0.0012, elapsed * 0.0008);
-  if (clouds) clouds.rotation.y = elapsed * 0.002;
   if (crowd) updateCrowd(elapsed);
   U.time.value = elapsed; U.cam.value.copy(camera.position);
   birdsFX?.(elapsed);
@@ -1463,7 +1484,7 @@ function loop() {
   hemi.intensity = WORLD.hemi[2] * (1 - 0.93 * game.tf);
   scene.environmentIntensity = WORLD.env * (1 - 0.9 * game.tf);
   scene.fog.color.copy(FOG_BASE).lerp(FOG_CAVE, game.tf);
-  renderer.toneMappingExposure += (WORLD.exposure * (1 + 1.5 * game.tf) - renderer.toneMappingExposure) * Math.min(1, dt * 1.2);
+  renderer.toneMappingExposure += (WORLD.exposure * (1 + 0.9 * game.tf) - renderer.toneMappingExposure) * Math.min(1, dt * 1.2);
   if (game.shake > 0.01 && !game.camLock) { // eruption tremor, stronger inside the mountain
     const a = game.shake * 0.2 * (1 + game.tf) * clamp(1.4 - Math.hypot(camera.position.x, camera.position.z) / 3000, 0.25, 1);
     camera.position.x += (Math.random() - 0.5) * a; camera.position.y += (Math.random() - 0.5) * a; camera.position.z += (Math.random() - 0.5) * a;
@@ -1477,21 +1498,28 @@ function loop() {
 async function init() {
   const msg = (t) => { $('load-msg').textContent = t; return nextFrame(); };
   await document.fonts.load('italic 800 64px "Barlow Condensed"').catch(() => {});
+  await msg('Loading sky and materials');
+  [TX] = await Promise.all([
+    loadTextures(['grass004_color.jpg', 'grass004_normal.jpg', 'ground037_color.jpg', 'ground037_normal.jpg', 'rock051_color.jpg', 'rock051_normal.jpg', 'rock058_color.jpg', 'rock058_normal.jpg',
+      'ground054_color.jpg', 'ground054_normal.jpg', 'snow015_color.jpg', 'snow015_normal.jpg', 'asphalt033_color.jpg', 'asphalt033_normal.jpg', 'bark014_color.jpg', 'bark014_normal.jpg',
+      'bark012_color.jpg', 'bark012_normal.jpg', 'lava001_color.jpg', 'lava001_emission.jpg', 'leafset009.png'], ANISO),
+    setupSky(),
+  ]);
   await msg(`Sculpting ${WORLD.name}`); buildTerrain();
   await msg('Paving roads'); buildRoad(); buildWater();
   await msg(WORLD.id === 'fuego' ? 'Igniting the volcano' : 'Planting forests'); buildVegetation();
-  if (!LOW) scene.add(makeGrass({ heights: tH, tn: TN, cell: CELL, half: HALF, size: T_SIZE, tint: grassTint, grid: TOUCH ? 150 : 220, spacing: 0.55 }));
+  if (!LOW) scene.add(makeGrass({ heights: tH, tn: TN, cell: CELL, half: HALF, size: T_SIZE, tint: grassTint, grid: TOUCH ? 150 : 240, spacing: 0.5 }));
   birdsFX = makeBirds(scene, WORLD.birds.flocks.map(([x, y, z, r, n, speed]) => ({ c: new THREE.Vector3(x, y, z), r, n, speed })), WORLD.birds.color, rand);
-  if (C.runs.length) { await msg('Boring tunnels'); tunnelFX = buildTunnels({ scene, C, M, runs: C.runs, chamber: C.chamber, lava: WORLD.id === 'fuego', canvasTex, rand }); }
+  if (C.runs.length) { await msg('Boring tunnels'); tunnelFX = buildTunnels({ scene, C, M, runs: C.runs, chamber: C.chamber, lava: WORLD.id === 'fuego', lavaMaps: { color: TX.lava001_color, emission: TX.lava001_emission }, rockMaps: { color: TX.rock058_color, normal: TX.rock058_normal }, canvasTex, rand }); }
   if (WORLD.id === 'fuego') {
     const vents = [520, 380, 250, 120].map((back, i) => { C.at(SEGS[0].end - back, tmpP); const lat = (i % 2 ? -1 : 1) * (ROAD_W / 2 + 15), x = tmpP.x - Math.cos(tmpP.psi) * lat, z = tmpP.z + Math.sin(tmpP.psi) * lat; return new THREE.Vector3(x, getH(x, z), z); });
     volcanoFX = buildVolcanoFX({
-      scene, canvasTex, rand, rivers: RIVERS, crater: WORLD.crater, vents, getH,
+      scene, canvasTex, rand, rivers: RIVERS, crater: WORLD.crater, vents, getH, lavaMaps: { color: TX.lava001_color, emission: TX.lava001_emission },
       onEruption: () => { if (game.state === 'ride') { toast('🌋 FUEGO IS ERUPTING', 'red', 4000); buzz([60, 40, 120]); } },
       onThunder: (p) => thunder(p.distanceTo(camera.position)),
     });
   }
-  await msg('Building arches'); buildArches(); buildCrowd(); buildClouds(); buildRiderGeo();
+  await msg('Building arches'); buildArches(); buildCrowd(); buildRiderGeo();
   await msg('Ready');
   game.state = 'menu';
   $('loading').classList.add('hidden');

@@ -6,6 +6,8 @@ VELOWORLD — a Zwift-style cycling game in Three.js. Live at https://bryantebee
 - Static site, no build step. `index.html` holds markup, CSS and HUD; `main.js` holds the game.
 - Three.js 0.170 comes from the jsDelivr CDN via the import map in `index.html`.
 - `manifest.webmanifest` and `icon-*.png` make it installable as a full-screen home-screen app.
+- Modules: `body.js` (skinned riders), `environment.js` (terrain/water/grass/wind shaders, grading), `flora.js` (trees), `tunnel.js`, `volcano.js`.
+- `assets/` holds CC0 HDRIs (Poly Haven) and 1K PBR textures (ambientCG); keep new assets CC0, compressed, and list them in README.
 
 ## Workflow
 - **After every change: commit and push to `origin main` without asking.** Pushing deploys to GitHub Pages; check the Pages build succeeds (`gh api repos/bryantebeek/veloworld/pages/builds/latest --jq .status`).
