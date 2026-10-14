@@ -103,8 +103,10 @@ const POWERUPS = {
 
 // ============================================================ renderer / scene
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-const TOUCH = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+const TOUCH = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0 || new URLSearchParams(location.search).has('touch');
 if (TOUCH) document.body.classList.add('touch');
+const buzz = (p) => navigator.vibrate?.(p); // haptics (Android; iOS Safari has no vibration API)
+const FS_OK = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
 renderer.setPixelRatio(Math.min(devicePixelRatio, TOUCH ? 1.5 : 1.75));
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -628,7 +630,7 @@ function placeRider(r, dt, camPos) {
 
 // ============================================================ simulation
 const game = { state: 'loading', time: 0, race: false, laps: 0, raceDist: 0, cam: 0, paused: false, finished: false, countdown: 0, energy: 0, rideTime: 0, elev: 0, hudT: 0, rideOnT: 40, muted: false, hideHelp: false };
-const input = { target: 200, manualT: 0 };
+const input = { target: 200, manualT: 0, sprint: false };
 const BT = { power: null, powerAt: 0, cad: null, hr: null, hrAt: 0, cp: null, lastGrade: 1e9, busy: false, crank: null, lastSend: 0 };
 
 function neighbors() {
@@ -697,7 +699,8 @@ function botPower(r, dt) {
 }
 
 function playerPower() {
-  return BT.power != null && performance.now() - BT.powerAt < 3000 ? BT.power : input.target;
+  const P = BT.power != null && performance.now() - BT.powerAt < 3000 ? BT.power : input.target;
+  return input.sprint && player.wbal > 0 ? Math.max(P, player.ftp * 1.7) : P;
 }
 
 const crossed = (r, x) => Math.floor((r.dist - x) / L) > Math.floor((r.prevDist - x) / L);
@@ -890,8 +893,8 @@ function updateHUD() {
   $('h-kj').textContent = Math.round(game.energy / 1000);
   $('h-energy').style.width = (p.wbal / p.w0) * 100 + '%';
   const bt = BT.power != null && performance.now() - BT.powerAt < 3000;
-  $('t-target').innerHTML = bt ? 'BT' : `${input.target}<small>W</small>`;
-  $('h-src').textContent = bt ? `⚡ ${BT.name || 'TRAINER'}` : `KEYBOARD · TARGET ${input.target}W`;
+  $('h-src').textContent = bt ? `⚡ ${BT.name || 'TRAINER'}` : `${TOUCH ? 'TOUCH' : 'KEYBOARD'} · TARGET ${input.target}W`;
+  if (TOUCH) updateTouch(bt);
   const dr = p.draft * (p.puActive === 'draft' ? 1.5 : 1);
   $('h-draft').textContent = `DRAFT ${Math.round(dr * 100)}%`;
   $('h-draft').style.opacity = dr > 0.04 ? 1 : 0;
@@ -987,6 +990,7 @@ function updateAudio() {
   audio.crowd.g.gain.setTargetAtTime(clamp(1 - dCrowd / 140, 0, 1) * 0.16, t, 0.3);
 }
 function chime(freqs) {
+  buzz(freqs.length > 2 ? [25, 40, 25] : 14);
   if (!audio.ctx || game.muted) return;
   const t0 = audio.ctx.currentTime;
   freqs.forEach((f, i) => {
@@ -1097,14 +1101,23 @@ function startRide() {
   $('menu').classList.add('hidden');
   $('hud').classList.remove('hidden');
   $('touch').classList.remove('hidden');
+  const zc = ['#8e9aae', '#3a8dde', '#3ddc84', '#ffd23f', '#fc6719', '#ff3d3d'], stops = [0, ...ZONES.map((z) => z / THROTTLE_MAX), 1];
+  $('th-zones').style.background = `linear-gradient(0deg,${zc.map((c, i) => `${c} ${stops[i] * 100}% ${stops[i + 1] * 100}%`).join(',')})`;
   initProfile(); initMinimap();
   initAudio();
+  keepAwake();
+  if (TOUCH && FS_OK && document.body.classList.contains('compact')) act.fullscreen();
   game.state = 'countdown'; game.countdown = 3.99;
   camPos.copy(camera.position);
 }
 
+// power zones as fractions of FTP (Z1..Z6 boundaries) and the throttle's full-scale
+const ZONES = [0.6, 0.76, 0.9, 1.05, 1.19], THROTTLE_MAX = 1.6;
+const zoneOf = (w) => ZONES.filter((z) => w / player.ftp >= z).length;
+const ZONE_COLORS = ['#c3cbd8', '#5aaeff', '#3ddc84', '#ffd23f', '#ff8a3d', '#ff4d4d'];
+
 const act = {
-  power: (d) => (input.target = clamp(input.target + d, 0, 1500)),
+  power: (d) => { input.target = clamp(input.target + d, 0, 1500); if (TOUCH) updateThrottle(); },
   steer: (d) => { player.latTarget = clamp(player.latTarget + d * 1.2, -4.6, 4.6); input.manualT = 4; },
   powerup: () => {
     if (!player.puHeld) return;
@@ -1116,9 +1129,21 @@ const act = {
     const near = riders.filter((r) => r !== player && Math.abs(r.dist - player.dist) < 40).sort((a, b) => Math.abs(a.dist - player.dist) - Math.abs(b.dist - player.dist))[0];
     if (near) { toast(`👍 You gave ${near.name} a Ride On`, 'orange'); chime([784, 988]); }
   },
-  pause: () => { game.paused = !game.paused; $('pause').classList.toggle('hidden', !game.paused); },
-  mute: () => (game.muted = !game.muted),
+  pause: () => { game.paused = !game.paused; $('pause').classList.toggle('hidden', !game.paused); if (game.paused) setSprint(false); },
+  mute: () => { game.muted = !game.muted; $('t-mute').textContent = game.muted ? '🔇' : '🔊'; },
+  fullscreen: () => {
+    const d = document, el = d.documentElement;
+    if (d.fullscreenElement || d.webkitFullscreenElement) return (d.exitFullscreen || d.webkitExitFullscreen).call(d);
+    Promise.resolve((el.requestFullscreen || el.webkitRequestFullscreen)?.call(el, { navigationUI: 'hide' }))
+      .then(() => screen.orientation?.lock?.('landscape')).catch(() => {});
+  },
 };
+function setSprint(on) {
+  if (input.sprint === on || !player) return;
+  input.sprint = on;
+  $('t-attack').classList.toggle('down', on);
+  if (on) { buzz(30); if (player.wbal <= 0) toast('🥵 No matches left — recover first', 'red', 1600); }
+}
 addEventListener('keydown', (e) => {
   if (!player) return;
   const k = e.key.toLowerCase();
@@ -1129,13 +1154,17 @@ addEventListener('keydown', (e) => {
   else if (k === 'arrowleft' || k === 'a') act.steer(-1);
   else if (k === 'arrowright' || k === 'd') act.steer(1);
   else if (k === ' ') act.powerup();
+  else if (k === 'x') setSprint(true);
   else if (k >= '1' && k <= '6') act.cam(+k - 1);
   else if (k === 'c') act.cam();
   else if (k === 'r') act.rideOn();
   else if (k === 'p' || k === 'escape') act.pause();
   else if (k === 'm') act.mute();
+  else if (k === 'f') act.fullscreen();
   else if (k === 'h') $('help').classList.toggle('hidden');
 });
+addEventListener('keyup', (e) => { if (e.key.toLowerCase() === 'x') setSprint(false); });
+
 // touch buttons: tap fires once, holding a [data-hold] button auto-repeats
 document.querySelectorAll('[data-act]').forEach((b) => {
   let t1, t2;
@@ -1144,17 +1173,79 @@ document.querySelectorAll('[data-act]').forEach((b) => {
     e.preventDefault();
     if (!player) return;
     const fire = () => act[b.dataset.act](b.dataset.arg != null ? +b.dataset.arg : undefined);
-    fire(); b.classList.add('down');
+    fire(); buzz(8); b.classList.add('down');
     if (b.hasAttribute('data-hold')) t1 = setTimeout(() => (t2 = setInterval(fire, 90)), 380);
   });
   for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, stop);
 });
+// attack: hold to sprint
+const atk = $('t-attack');
+const capture = (el, e) => { try { el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ } };
+atk.addEventListener('pointerdown', (e) => { e.preventDefault(); capture(atk, e); setSprint(true); });
+for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) atk.addEventListener(ev, () => setSprint(false));
+// throttle: drag up/down relative to where you touched; tap above/below the knob for ±10 W
+const th = $('throttle');
+let drag = null;
+th.addEventListener('pointerdown', (e) => {
+  if (!player) return;
+  capture(th, e);
+  drag = { y: e.clientY, t: input.target, moved: false, rect: th.getBoundingClientRect() };
+  th.classList.add('drag'); buzz(8);
+});
+th.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  if (Math.abs(e.clientY - drag.y) > 6) drag.moved = true;
+  if (!drag.moved) return;
+  const max = Math.round(player.ftp * THROTTLE_MAX), t = clamp(Math.round((drag.t + ((drag.y - e.clientY) / drag.rect.height) * max) / 5) * 5, 0, max);
+  if (t === input.target) return;
+  if (zoneOf(t) !== zoneOf(input.target)) buzz(12);
+  input.target = t; updateThrottle();
+});
+const endDrag = () => {
+  if (drag && !drag.moved) {
+    const knob = $('th-knob').getBoundingClientRect();
+    act.power(drag.y < knob.top + knob.height / 2 ? 10 : -10); buzz(8);
+  }
+  drag = null; th.classList.remove('drag');
+};
+th.addEventListener('pointerup', endDrag);
+th.addEventListener('pointercancel', () => { drag = null; th.classList.remove('drag'); });
+$('touch').addEventListener('contextmenu', (e) => e.preventDefault());
+
+function updateThrottle(bt = false) {
+  const w = bt ? BT.power : input.target, f = clamp(w / (player.ftp * THROTTLE_MAX), 0, 1), pos = `calc(26px + ${f} * (100% - 52px))`, z = zoneOf(w);
+  $('th-knob').style.bottom = pos; $('th-fill').style.height = pos;
+  $('t-target').textContent = Math.round(w);
+  $('th-zone').textContent = 'Z' + (z + 1); $('th-zone').style.color = ZONE_COLORS[z];
+  $('th-fill').style.background = `linear-gradient(0deg,${ZONE_COLORS[z]}99,${ZONE_COLORS[z]}22)`;
+}
+function updateTouch(bt) {
+  th.classList.toggle('bt', bt);
+  if (!drag) updateThrottle(bt);
+  atk.style.setProperty('--e', (player.wbal / player.w0) * 100 + '%');
+  atk.classList.toggle('empty', player.wbal <= 0);
+  $('t-pu').classList.toggle('hidden', !player.puHeld);
+  if (player.puHeld) $('t-pu').textContent = POWERUPS[player.puHeld].icon;
+}
+
 $('pause').addEventListener('pointerdown', () => game.paused && act.pause());
 document.addEventListener('gesturestart', (e) => e.preventDefault()); // iOS pinch-zoom
-// scale the HUD down to fit smaller screens (layout is designed for ~1320x820)
-const fitHud = () => ($('hud').style.zoom = Math.min(1, innerWidth / 1320, innerHeight / 820));
+// keep the screen on while riding; auto-pause when the app is backgrounded
+const keepAwake = () => navigator.wakeLock?.request('screen').catch(() => {});
+document.addEventListener('visibilitychange', () => {
+  if (!player) return;
+  if (document.hidden) { if (game.state === 'ride' && !game.paused) act.pause(); }
+  else keepAwake();
+});
+// HUD is designed at ~1320x820 and zoomed down; phones get a compact layout designed at 844x390
+const fitHud = () => {
+  const s = Math.min(innerWidth / 1320, innerHeight / 820), compact = s < 0.62;
+  document.body.classList.toggle('compact', compact);
+  $('hud').style.zoom = compact ? Math.min(1, innerWidth / 844, innerHeight / 390) : Math.min(1, s);
+  $('touch').style.zoom = clamp(innerHeight / 720, 0.7, 1);
+};
 fitHud();
-addEventListener('wheel', (e) => { if (player && game.state === 'ride') input.target = clamp(input.target + (e.deltaY < 0 ? 10 : -10), 0, 1500); }, { passive: true });
+addEventListener('wheel', (e) => { if (player && game.state === 'ride') act.power(e.deltaY < 0 ? 10 : -10); }, { passive: true });
 function setCam(i) { game.cam = i; $('camname').textContent = CAMS[i]; }
 
 addEventListener('resize', () => {
@@ -1164,13 +1255,26 @@ addEventListener('resize', () => {
   if (player) initProfile();
 });
 
+// dynamic resolution: trade pixels for frame rate on slower GPUs (phones/tablets)
+const perf = { t: 0, n: 0, max: renderer.getPixelRatio() };
+function adaptResolution(raw) {
+  if (raw > 0.25) return; // ignore hitches (tab switches etc.)
+  perf.t += raw; perf.n++;
+  if (perf.t < 2) return;
+  const fps = perf.n / perf.t, pr = renderer.getPixelRatio();
+  const next = fps < 45 ? Math.max(0.6, pr - 0.15) : fps > 57 ? Math.min(perf.max, pr + 0.1) : pr;
+  if (next !== pr) renderer.setPixelRatio(next);
+  perf.t = perf.n = 0;
+}
+
 // ============================================================ main loop
 const clock = new THREE.Clock();
 let elapsed = 0;
 function loop() {
   requestAnimationFrame(loop);
-  const dt = Math.min(clock.getDelta(), 0.05);
+  const raw = clock.getDelta(), dt = Math.min(raw, 0.05);
   if (game.paused) return;
+  adaptResolution(raw);
   elapsed += dt;
   update(dt);
   updateCamera(dt, elapsed);
@@ -1205,6 +1309,8 @@ document.querySelectorAll('#m-mode button').forEach((b) => (b.onclick = () => { 
 $('m-bots').oninput = (e) => ($('m-bots-v').textContent = e.target.value);
 $('m-go').onclick = startRide;
 if (navigator.bluetooth) { $('m-trainer').onclick = connectTrainer; $('m-hrm').onclick = connectHR; }
-else { $('m-trainer').disabled = $('m-hrm').disabled = true; $('m-bt-status').textContent = 'Web Bluetooth not available in this browser — keyboard mode.'; }
-window.__game = { game, riders, C, update, input, get player() { return player; } };
+else { $('m-trainer').disabled = $('m-hrm').disabled = true; $('m-bt-status').textContent = `Web Bluetooth not available in this browser — ${TOUCH ? 'touch' : 'keyboard'} controls.`; }
+if (!FS_OK) $('t-fs').classList.add('hidden');
+if (TOUCH && !FS_OK && !navigator.standalone && !matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches) $('m-install').classList.remove('hidden');
+window.__game = { game, riders, C, update, input, act, setSprint, get player() { return player; } };
 init();

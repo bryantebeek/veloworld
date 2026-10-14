@@ -1,0 +1,20 @@
+# AGENTS.md
+
+VELOWORLD — a Zwift-style cycling game in Three.js. Live at https://bryantebeek.github.io/veloworld/
+
+## Layout
+- Static site, no build step. `index.html` holds markup, CSS and HUD; `main.js` holds the game.
+- Three.js 0.170 comes from the jsDelivr CDN via the import map in `index.html`.
+- `manifest.webmanifest` and `icon-*.png` make it installable as a full-screen home-screen app.
+
+## Workflow
+- **After every change: commit and push to `origin main` without asking.** Pushing deploys to GitHub Pages; check the Pages build succeeds (`gh api repos/bryantebeek/veloworld/pages/builds/latest --jq .status`).
+- Verify in a browser before pushing: `python3 -m http.server 8790`, open `http://localhost:8790/`.
+- `window.__game` exposes `game`, `riders`, `player`, `update(dt)`, `input`, `act`, `setSprint` for scripted checks — step the sim with `update()` rather than waiting on frames.
+- Add `?touch` to the URL to force the touch UI on a desktop browser.
+- Headless/preview browsers render with SwiftShader (CPU); frame rate there is meaningless.
+
+## Quality bar
+- Aim for polished, AAA-feeling results in Zwift style — visuals, HUD and game feel.
+- Desktop (keyboard), tablet and phone (touch) are all first-class. Every player action needs both a keyboard binding and a touch control (`act` in `main.js` is the shared action map).
+- Check phone landscape (~844×390, the compact HUD) and tablet (~1180×820) layouts when touching UI.

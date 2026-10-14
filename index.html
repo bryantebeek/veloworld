@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="VELOWORLD">
+<meta name="theme-color" content="#0b0f16">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
 <title>VELOWORLD — Virtual Cycling</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -144,23 +151,90 @@ input[type=range]{width:100%;accent-color:var(--orange)}
 #results button{padding:12px 20px;border-radius:10px;border:0;background:var(--orange);color:#fff;font:800 18px 'Barlow Condensed';letter-spacing:.08em;cursor:pointer;margin-right:8px}
 #results button.ghost{background:rgba(255,255,255,.1)}
 
-/* touch controls */
-#touch{position:fixed;inset:0;pointer-events:none;font-family:'Barlow Condensed',sans-serif}
+/* ---------- touch controls ---------- */
+#touch{position:fixed;inset:0;pointer-events:none;font-family:'Barlow Condensed',sans-serif;-webkit-user-select:none}
 body:not(.touch) #touch,body.touch #help,body.touch #camname{display:none!important}
-#touch button{pointer-events:auto;border:0;color:#fff;background:rgba(14,19,30,.62);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
-  border:1px solid rgba(255,255,255,.14);box-shadow:0 6px 18px rgba(0,0,0,.35);font:800 30px 'Barlow Condensed';display:grid;place-items:center;transition:transform .08s,background .08s}
-#touch button.down{transform:scale(.92);background:rgba(252,103,25,.85)}
-.t-steer{position:absolute;left:calc(16px + env(safe-area-inset-left));bottom:calc(16px + env(safe-area-inset-bottom));display:flex;gap:12px}
-.t-steer button{width:78px;height:78px;border-radius:50%}
-.t-small{position:absolute;left:calc(16px + env(safe-area-inset-left));bottom:calc(106px + env(safe-area-inset-bottom));display:flex;gap:10px}
-.t-small button{width:50px;height:50px;border-radius:14px;font-size:22px!important}
-.t-power{position:absolute;right:calc(16px + env(safe-area-inset-right));bottom:calc(16px + env(safe-area-inset-bottom));display:flex;flex-direction:column;align-items:center;gap:8px}
-.t-power button{width:84px;height:84px;border-radius:22px;font-size:44px!important}
-.t-power button[data-arg="10"]{background:rgba(252,103,25,.7)}
-#t-target{font-size:20px;font-weight:800;text-shadow:0 1px 4px #000;font-variant-numeric:tabular-nums}
-#t-target small{font-size:12px;color:#cfd6e2;margin-left:2px}
+.glass{background:linear-gradient(180deg,rgba(28,35,50,.62),rgba(12,16,26,.62));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border:1px solid rgba(255,255,255,.16);box-shadow:0 8px 22px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.12)}
+#touch button{pointer-events:auto;border:0;color:#fff;font-family:'Barlow Condensed';display:grid;place-items:center;transition:transform .09s cubic-bezier(.3,1.6,.5,1),filter .09s}
+#touch button.down{transform:scale(.9);filter:brightness(1.35)}
+.t-left{position:absolute;left:calc(14px + env(safe-area-inset-left));bottom:calc(14px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:12px}
+.t-small{display:flex;gap:10px}
+.t-small button{width:52px;height:52px;border-radius:16px;font-size:22px}
+.t-small button.on{background:rgba(252,103,25,.75)}
+.t-steer{display:flex;width:192px;height:86px;border-radius:43px;overflow:hidden;pointer-events:auto}
+.t-steer button{flex:1;height:100%;background:none!important;box-shadow:none!important;border:0!important;font-size:30px;color:rgba(255,255,255,.9)}
+.t-steer button + button{border-left:1px solid rgba(255,255,255,.14)!important}
+.t-steer button.down{background:rgba(252,103,25,.6)!important;transform:none}
+.t-right{position:absolute;right:calc(14px + env(safe-area-inset-right));bottom:calc(14px + env(safe-area-inset-bottom));display:flex;align-items:flex-end;gap:14px}
+.t-col{display:flex;flex-direction:column;align-items:center;gap:14px}
+#t-attack{width:96px;height:96px;border-radius:50%;position:relative;font-size:34px;line-height:1;
+  background:conic-gradient(#ffd23f var(--e,100%),rgba(255,255,255,.12) 0)!important;padding:0}
+#t-attack::before{content:'';position:absolute;inset:6px;border-radius:50%;background:radial-gradient(circle at 50% 35%,#ff5a3d,#c8102e 70%);box-shadow:inset 0 2px 0 rgba(255,255,255,.25)}
+#t-attack span{position:relative;display:flex;flex-direction:column;align-items:center}
+#t-attack small{font-size:12px;font-weight:800;letter-spacing:.12em;margin-top:2px}
+#t-attack.down::before{background:radial-gradient(circle at 50% 35%,#ffb03d,#fc6719 70%);box-shadow:0 0 30px 6px rgba(252,103,25,.7)}
+#t-attack.empty::before{filter:grayscale(.85) brightness(.7)}
+#t-pu{width:74px;height:74px;border-radius:50%;font-size:34px;background:radial-gradient(circle at 50% 35%,#4fa3ff,#1e63d6 70%)!important;
+  box-shadow:0 0 0 4px rgba(255,255,255,.85),0 0 28px rgba(79,163,255,.8)!important;animation:pulse 1s infinite}
+#throttle{position:relative;width:76px;height:300px;border-radius:38px;pointer-events:auto;touch-action:none;overflow:hidden;cursor:ns-resize}
+#th-zones{position:absolute;left:50%;top:14px;bottom:14px;width:8px;margin-left:-4px;border-radius:4px;opacity:.9}
+#th-fill{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(0deg,rgba(252,103,25,.55),rgba(252,103,25,.15))}
+#th-knob{position:absolute;left:6px;right:6px;height:52px;margin-bottom:-26px;border-radius:26px;background:#fff;color:#111;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  box-shadow:0 4px 14px rgba(0,0,0,.45);transition:transform .1s}
+#throttle.drag #th-knob{transform:scale(1.08)}
+#th-knob b{font-size:24px;font-weight:800;line-height:.9;font-variant-numeric:tabular-nums}
+#th-knob small{font-size:10px;font-weight:700;color:#666;letter-spacing:.1em}
+#th-zone{position:absolute;top:10px;left:0;right:0;text-align:center;font-size:12px;font-weight:800;letter-spacing:.1em;text-shadow:0 1px 3px #000}
+#throttle.bt{opacity:.55;pointer-events:none}
 #rotate{display:none}
 @media (orientation:portrait) and (pointer:coarse){#rotate{display:grid;position:fixed;inset:0;z-index:20;place-items:center;background:#0b0f16;font:800 italic 34px 'Barlow Condensed';text-align:center;padding:30px}}
+
+/* ---------- compact HUD for phones (designed at 844x390, zoomed to fit) ---------- */
+body.compact #power{width:160px;padding:8px 11px 9px;left:calc(8px + env(safe-area-inset-left));top:8px;border-radius:10px}
+body.compact .big{font-size:44px}
+body.compact .big small{font-size:16px}
+body.compact .sub{font-size:17px}
+body.compact .stats{margin-top:5px;padding-top:5px}
+body.compact .stats b{font-size:17px}
+body.compact .stats div:nth-child(n+3){display:none}
+body.compact .energy{margin-top:6px;height:5px}
+body.compact .meta{font-size:10px}
+body.compact #pu{left:calc(8px + env(safe-area-inset-left));top:154px;width:46px;height:46px}
+body.compact #pu span{font-size:20px}
+body.compact #pu em{display:none}
+body.compact #top{top:8px;padding:5px 4px;border-radius:10px}
+body.compact #top>div{min-width:60px;padding:0 6px}
+body.compact #top b{font-size:22px}
+body.compact #top small{font-size:9px;margin-top:1px}
+body.compact #grade{right:calc(136px + env(safe-area-inset-right));top:8px;min-width:70px;padding:5px 8px;border-radius:10px}
+body.compact #grade b{font-size:24px}
+body.compact #grade small{font-size:9px}
+body.compact #minimap{width:120px;height:120px;right:calc(8px + env(safe-area-inset-right));top:8px;border-radius:10px}
+body.compact #riders{display:none}
+body.compact #profile{width:48vw;height:52px;bottom:calc(8px + env(safe-area-inset-bottom));border-radius:8px}
+body.compact #segment{top:62px;width:250px;padding:5px 10px}
+body.compact #seg-name{font-size:15px}
+body.compact #seg-time{font-size:18px}
+body.compact #segment .foot{font-size:11px}
+body.compact #toasts{top:92px;gap:5px}
+body.compact .toast{font-size:14px;padding:6px 14px;white-space:normal;max-width:60vw;text-align:center}
+body.compact #countdown{font-size:110px}
+body.compact #results .panel{zoom:.75}
+body.compact .t-small button{width:58px;height:58px;font-size:24px}
+body.touch #pu.ready{display:none}
+
+/* menu on short screens: two columns */
+@media (max-height:540px){
+  #menu{padding:14px 0 14px 5vw}
+  .card{width:min(780px,90vw);display:grid;grid-template-columns:1fr 1fr;gap:0 22px;align-items:end}
+  .logo{font-size:48px}.tagline{margin:4px 0 12px;font-size:12px}
+  .logo,.tagline{grid-column:1/-1}
+  .field{margin-bottom:10px}
+  input[type=text],input[type=number],select{padding:8px 10px}
+  #m-go{margin:0 0 10px;padding:12px;font-size:24px}
+}
+#m-install{font-size:12px;color:#aab4c4;margin-top:10px;grid-column:1/-1}
 </style>
 </head>
 <body>
@@ -199,7 +273,8 @@ body:not(.touch) #touch,body.touch #help,body.touch #camname{display:none!import
   <canvas id="profile"></canvas>
   <div id="help" class="panel">
     <div><kbd>↑</kbd><kbd>↓</kbd> power ±10W <span style="opacity:.6">(shift ±25)</span> · wheel</div>
-    <div><kbd>←</kbd><kbd>→</kbd> steer · <kbd>Space</kbd> power-up · <kbd>R</kbd> Ride On</div>
+    <div><kbd>←</kbd><kbd>→</kbd> steer · <kbd>X</kbd> hold to attack · <kbd>Space</kbd> power-up</div>
+    <div><kbd>R</kbd> Ride On · <kbd>F</kbd> fullscreen</div>
     <div><kbd>1</kbd>–<kbd>6</kbd> / <kbd>C</kbd> camera · <kbd>P</kbd> pause · <kbd>M</kbd> mute · <kbd>H</kbd> hide</div>
   </div>
   <div id="camname" class="panel">CHASE CAM</div>
@@ -207,9 +282,26 @@ body:not(.touch) #touch,body.touch #help,body.touch #camname{display:none!import
   <div id="countdown"></div>
 </div>
 <div id="touch" class="hidden">
-  <div class="t-small"><button data-act="cam" title="Camera">🎥</button><button data-act="rideOn" title="Ride On">👍</button><button data-act="pause" title="Pause">⏸</button><button data-act="mute" title="Mute">🔈</button></div>
-  <div class="t-steer"><button data-act="steer" data-arg="-1" data-hold>◀</button><button data-act="steer" data-arg="1" data-hold>▶</button></div>
-  <div class="t-power"><button data-act="power" data-arg="10" data-hold>+</button><div id="t-target">200<small>W</small></div><button data-act="power" data-arg="-10" data-hold>−</button></div>
+  <div class="t-left">
+    <div class="t-small">
+      <button class="glass" data-act="cam" aria-label="Camera">🎥</button>
+      <button class="glass" data-act="rideOn" aria-label="Ride On">👍</button>
+      <button class="glass" data-act="pause" aria-label="Pause">⏸</button>
+      <button class="glass" data-act="mute" id="t-mute" aria-label="Mute">🔊</button>
+      <button class="glass" data-act="fullscreen" id="t-fs" aria-label="Fullscreen">⛶</button>
+    </div>
+    <div class="t-steer glass"><button data-act="steer" data-arg="-1" data-hold aria-label="Steer left">◀</button><button data-act="steer" data-arg="1" data-hold aria-label="Steer right">▶</button></div>
+  </div>
+  <div class="t-right">
+    <div class="t-col">
+      <button id="t-pu" class="hidden" data-act="powerup" aria-label="Use power-up"></button>
+      <button id="t-attack" aria-label="Attack (hold)"><span>⚡<small>ATTACK</small></span></button>
+    </div>
+    <div id="throttle" class="glass" aria-label="Power">
+      <div id="th-fill"></div><div id="th-zones"></div><div id="th-zone">Z2</div>
+      <div id="th-knob"><b id="t-target">200</b><small>WATTS</small></div>
+    </div>
+  </div>
 </div>
 <div id="pause" class="hidden">PAUSED</div>
 <div id="rotate">↻ Rotate your device<br>to landscape</div>
@@ -218,10 +310,10 @@ body:not(.touch) #touch,body.touch #help,body.touch #camname{display:none!import
   <div class="card">
     <div class="logo">VELO<span>WORLD</span></div>
     <div class="tagline">Virtual cycling · Isla Verde</div>
-    <div class="field"><label>Rider name</label><input id="m-name" type="text" value="You" maxlength="18"></div>
+    <div class="field"><label>Rider name</label><input id="m-name" type="text" value="You" maxlength="18" autocomplete="off" autocapitalize="words" enterkeyhint="done"></div>
     <div class="grid2">
-      <div class="field"><label>Weight (kg)</label><input id="m-weight" type="number" value="75" min="40" max="150"></div>
-      <div class="field"><label>FTP (W)</label><input id="m-ftp" type="number" value="250" min="80" max="500"></div>
+      <div class="field"><label>Weight (kg)</label><input id="m-weight" type="number" inputmode="numeric" value="75" min="40" max="150"></div>
+      <div class="field"><label>FTP (W)</label><input id="m-ftp" type="number" inputmode="numeric" value="250" min="80" max="500"></div>
     </div>
     <div class="field"><label>Mode</label>
       <div class="seg" id="m-mode">
@@ -234,6 +326,7 @@ body:not(.touch) #touch,body.touch #help,body.touch #camname{display:none!import
       <div id="m-bt-status"></div>
     </div>
     <button id="m-go">RIDE ON ▸</button>
+    <div id="m-install" class="hidden">📲 Tip: tap Share → <b>Add to Home Screen</b> to play full-screen.</div>
   </div>
 </div>
 
