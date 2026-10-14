@@ -1,6 +1,6 @@
 # VELOWORLD
 
-A Zwift-style virtual cycling game in Three.js: procedural island course with a KOM and sprint, 40 AI riders with drafting and attacks, power-based physics, power-ups, race mode, and optional Bluetooth smart trainer / heart-rate support (Chrome).
+A Zwift-style virtual cycling game in Three.js with two worlds — **Isla Verde** (rolling hills and lakes) and **Fuego** (an active volcano at sunset with lava rivers, a smoking crater and black-sand beaches) — each with a KOM and sprint, 40 AI riders with drafting and attacks, power-based physics, power-ups, race mode, and optional Bluetooth smart trainer / heart-rate support (Chrome).
 
 **Play:** https://bryantebeek.github.io/veloworld/
 

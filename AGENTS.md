@@ -11,7 +11,8 @@ VELOWORLD — a Zwift-style cycling game in Three.js. Live at https://bryantebee
 - **After every change: commit and push to `origin main` without asking.** Pushing deploys to GitHub Pages; check the Pages build succeeds (`gh api repos/bryantebeek/veloworld/pages/builds/latest --jq .status`).
 - Verify in a browser before pushing: `python3 -m http.server 8790`, open `http://localhost:8790/`.
 - `window.__game` exposes `game`, `riders`, `player`, `update(dt)`, `input`, `act`, `setSprint` for scripted checks — step the sim with `update()` rather than waiting on frames.
-- Add `?touch` to the URL to force the touch UI on a desktop browser.
+- Add `?touch` to the URL to force the touch UI on a desktop browser; `?map=fuego` loads the volcano world.
+- For framed screenshots set `__game.game.camLock = true` and move `__game.camera` yourself (camera smoothing barely moves at SwiftShader frame rates).
 - Headless/preview browsers render with SwiftShader (CPU); frame rate there is meaningless.
 
 ## Quality bar

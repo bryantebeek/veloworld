@@ -234,6 +234,16 @@ body.touch #pu.ready{display:none}
   input[type=text],input[type=number],select{padding:8px 10px}
   #m-go{margin:0 0 10px;padding:12px;font-size:24px}
 }
+.maps{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.maps button{position:relative;overflow:hidden;height:84px;border-radius:12px;border:2px solid rgba(255,255,255,.12);cursor:pointer;color:#fff;text-align:left;padding:10px 12px;
+  display:flex;flex-direction:column;justify-content:flex-end;font-family:'Barlow Condensed';box-shadow:0 6px 18px rgba(0,0,0,.3);transition:transform .15s,border-color .15s}
+.maps button[data-map=verde]{background:linear-gradient(160deg,rgba(0,0,0,0) 30%,rgba(0,0,0,.55)),radial-gradient(circle at 70% 20%,#9fd2ff,#3b7a3a 55%,#1f4a24)}
+.maps button[data-map=fuego]{background:linear-gradient(160deg,rgba(0,0,0,0) 30%,rgba(0,0,0,.55)),radial-gradient(circle at 72% 30%,#ffd27a,#ff5a1e 22%,#5a1a0e 50%,#1a1210)}
+.maps button b{font:800 italic 22px 'Barlow Condensed';letter-spacing:.02em;text-shadow:0 2px 6px rgba(0,0,0,.6)}
+.maps button span{font:600 11px 'Barlow';color:rgba(255,255,255,.85);text-shadow:0 1px 4px rgba(0,0,0,.7)}
+.maps button.on{border-color:var(--orange);box-shadow:0 0 0 2px rgba(252,103,25,.35),0 8px 24px rgba(0,0,0,.4)}
+.maps button:hover{transform:translateY(-2px)}
+@media (max-height:540px){.maps{grid-column:1/-1}.maps button{height:62px}}
 #m-install{font-size:12px;color:#aab4c4;margin-top:10px;grid-column:1/-1}
 </style>
 </head>
@@ -309,7 +319,11 @@ body.touch #pu.ready{display:none}
 <div id="menu" class="hidden">
   <div class="card">
     <div class="logo">VELO<span>WORLD</span></div>
-    <div class="tagline">Virtual cycling · Isla Verde</div>
+    <div class="tagline" id="m-tagline">Virtual cycling</div>
+    <div class="field maps" id="m-map">
+      <button data-map="verde"><b>ISLA VERDE</b><span>Rolling hills · lakes · alpine views</span></button>
+      <button data-map="fuego"><b>FUEGO</b><span>Active volcano · lava fields · sunset</span></button>
+    </div>
     <div class="field"><label>Rider name</label><input id="m-name" type="text" value="You" maxlength="18" autocomplete="off" autocapitalize="words" enterkeyhint="done"></div>
     <div class="grid2">
       <div class="field"><label>Weight (kg)</label><input id="m-weight" type="number" inputmode="numeric" value="75" min="40" max="150"></div>

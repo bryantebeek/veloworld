@@ -3,6 +3,11 @@ import { Sky } from 'three/addons/objects/Sky.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { initBodies, createBody, poseBody } from './body.js';
+import { buildVolcanoFX, palmGeometries, deadTreeGeometry, spireGeometry } from './volcano.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // ============================================================ utils
 const $ = (id) => document.getElementById(id);
@@ -43,13 +48,92 @@ const G = 9.81, RHO = 1.225, CRR = 0.004, BIKE_KG = 8, WHEEL_R = 0.335;
 const resist = (v, grade, mass, cda, draft) => { const th = Math.atan(grade); return mass * G * (Math.sin(th) + CRR * Math.cos(th)) + 0.5 * RHO * cda * (1 - draft) * v * v; };
 const powerFor = (r, v, grade, draft) => Math.max(0, v * resist(v, grade, r.mass + BIKE_KG, r.cda, draft));
 
+// ============================================================ worlds
+// A world defines the route (polar radius + elevation), terrain height and colouring, atmosphere and flora.
+const rollers = (t) => 0.8 * Math.sin(t * Math.PI * 2 * 29) + 0.4 * Math.sin(t * Math.PI * 2 * 53 + 1);
+const angDist = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+const cone = (r) => 560 * Math.exp(-((r / 1000) ** 1.5)); // Fuego's volcano profile
+const FUEGO_A0 = 0.42 * Math.PI * 2;
+const WORLD_CRATER_FLOOR = 640; // bearing where the route climbs highest onto the volcano
+const WORLDS = {
+  verde: (() => {
+    const HV = [20, 24, 34, 28, 30, 52, 82, 112, 100, 72, 48, 54, 40, 30, 22, 20], n = HV.length; // periodic Catmull-Rom profile
+    const G1 = new THREE.Color(0x3f7426), G2 = new THREE.Color(0x7fae43), DRY = new THREE.Color(0xa8a35e), ROCK = new THREE.Color(0x857e74),
+      SNOW = new THREE.Color(0xf4f7fb), SAND = new THREE.Color(0xd8c690), VERGE = new THREE.Color(0x8f9a55);
+    return {
+      id: 'verde', name: 'Isla Verde', tagline: 'Virtual cycling · Isla Verde', points: 30, kom: [[0.18, 0.32], [0.38, 0.5]],
+      radius: (a) => 1350 * (1 + 0.17 * Math.sin(3 * a + 0.5) + 0.11 * Math.cos(5 * a + 1.3) + 0.05 * Math.sin(9 * a + 2)),
+      elev: (t) => {
+        const f = (t % 1) * n, j = Math.floor(f), u = f - j, p0 = HV[(j - 1 + n) % n], p1 = HV[j % n], p2 = HV[(j + 1) % n], p3 = HV[(j + 2) % n];
+        return 0.5 * (2 * p1 + (-p0 + p2) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u * u + (-p0 + 3 * p1 - 3 * p2 + p3) * u * u * u) + rollers(t);
+      },
+      height: (x, z) => {
+        const r = Math.hypot(x, z);
+        let h = 16 + fbm(x / 700 + 3.1, z / 700 - 1.7, 4) * 48 + fbm(x / 140, z / 140, 3) * 6;
+        h -= 42 * (1 - smooth(350, 1050, r)); // central lake
+        const m = smooth(2050, 3100, r); // mountain ring
+        if (m > 0) h += m * (160 + ridge(x / 1100, z / 1100) * 460);
+        return h;
+      },
+      color: (c, x, z, h, ny, d) => {
+        c.copy(G1).lerp(G2, clamp(0.5 + fbm(x / 110, z / 110, 3) * 1.4, 0, 1));
+        c.lerp(DRY, clamp(fbm(x / 420 + 9, z / 420, 2) * 1.6, 0, 0.55));
+        c.lerp(VERGE, smooth(16, 8, d) * 0.6);
+        c.lerp(SAND, smooth(3.2, 0.6, h));
+        c.lerp(ROCK, smooth(0.86, 0.66, ny));
+        c.lerp(SNOW, smooth(310, 370, h + fbm(x / 80, z / 80, 2) * 50) * smooth(0.55, 0.78, ny));
+      },
+      sky: { elev: 36, azim: 205, turbidity: 2.6, rayleigh: 1.1, mie: 0.004, mieG: 0.86 },
+      fog: [0xb9d2e6, 0.00019], exposure: 0.75, env: 0.55, hemi: [0xd8ecff, 0x56663a, 0.7], sun: [0xfff1dc, 3.4],
+      water: 0x175d84, verge: 0x6f7f45, clouds: [0.6, 0.15], mini: [[0, '#2b6f9a'], [0.35, '#3c6a35'], [1, '#2b3b2a']],
+    };
+  })(),
+  fuego: (() => {
+    const BASALT = new THREE.Color(0x2a2523), RUST = new THREE.Color(0x5e3424), ASH = new THREE.Color(0x77706b), JUNGLE = new THREE.Color(0x2c5a1f),
+      JUNGLE2 = new THREE.Color(0x4c7d27), DARK = new THREE.Color(0x1d1a19), SAND = new THREE.Color(0x1c1a1a), SCORCH = new THREE.Color(0x140b08),
+      EMBER = new THREE.Color(0x6a1d08), VERGE = new THREE.Color(0x3d3631), tmp = new THREE.Color();
+    return {
+      id: 'fuego', name: 'Fuego', tagline: 'Virtual cycling · Fuego volcano', points: 48, kom: [[0.08, 0.34], [0.3, 0.55]],
+      // long traversing climb up the flank (wide side of the dip), quicker descent on the far side
+      radius: (a) => { const d = angDist(a, FUEGO_A0); return 1880 + 70 * Math.sin(3 * a + 1) + 40 * Math.sin(7 * a) - 820 * Math.exp(-((d / (d < 0 ? 1.35 : 0.85)) ** 2)); },
+      elev: (t, x, z) => Math.max(14, cone(Math.hypot(x, z))) + rollers(t),
+      height: (x, z) => {
+        const r = Math.hypot(x, z), a = Math.atan2(z, x);
+        let h = cone(r) + 320 * Math.exp(-((r / 560) ** 2)); // steep upper cone; negligible where the road runs
+        const flank = smooth(250, 650, r) * (1 - smooth(1800, 2400, r)); // radial erosion gullies
+        h += (ridge(Math.cos(a) * 8 + r / 700, Math.sin(a) * 8 - r / 900) - 0.45) * 60 * flank;
+        h += fbm(x / 450 + 5, z / 450, 4) * 26 + fbm(x / 90, z / 90, 3) * 4;
+        if (r < 340) h += (WORLD_CRATER_FLOOR + fbm(x / 60, z / 60, 2) * 8 - h) * smooth(310, 175, r); // crater
+        return h - smooth(2150, 2750, r) * 110; // island edge drops into the sea
+      },
+      color: (c, x, z, h, ny, d, lava) => {
+        c.copy(BASALT).lerp(RUST, clamp(fbm(x / 300 + 3, z / 300, 3) * 1.8 + 0.2, 0, 0.6));
+        c.lerp(tmp.copy(JUNGLE).lerp(JUNGLE2, clamp(0.5 + fbm(x / 120, z / 120, 3) * 1.5, 0, 1)), smooth(120, 45, h + fbm(x / 160, z / 160, 3) * 60) * smooth(2.5, 7, h) * clamp(0.55 + fbm(x / 230, z / 230, 3) * 1.8, 0, 1));
+        c.lerp(ASH, smooth(150, 330, h + fbm(x / 90, z / 90, 2) * 50) * 0.8);
+        c.lerp(DARK, smooth(0.82, 0.6, ny));
+        c.lerp(SAND, smooth(4, 0.6, h));
+        c.lerp(SCORCH, smooth(45, 10, lava));
+        c.lerp(EMBER, smooth(16, 5, lava) * 0.7);
+        c.lerp(VERGE, smooth(16, 8, d) * 0.55);
+      },
+      rivers: [[4.9, 1580, 1], [5.75, 1640, 2], [0.45, 1560, 3]], // [bearing, end radius, seed]
+      crater: { y: WORLD_CRATER_FLOOR + 3, r: 182 },
+      sky: { elev: 7, azim: 250, turbidity: 10, rayleigh: 3, mie: 0.003, mieG: 0.8 },
+      fog: [0x9c7a6c, 0.00026], exposure: 0.7, env: 0.45, hemi: [0xffc8a0, 0x2a1e1a, 0.6], sun: [0xffa868, 3.2],
+      water: 0x0d3550, verge: 0x3b3430, clouds: [0.05, 0.6], bloom: [0.6, 0.45, 2.2], // [strength, radius, HDR threshold]
+      mini: [[0, '#ff7a2a'], [0.08, '#7a2a12'], [0.16, '#3a302c'], [0.55, '#2e3a25'], [0.72, '#123a52'], [1, '#0b2a3d']],
+    };
+  })(),
+};
+const WORLD_ID = new URLSearchParams(location.search).get('map') === 'fuego' ? 'fuego' : 'verde';
+const WORLD = WORLDS[WORLD_ID];
+
 // ============================================================ course
 const ROAD_W = 12, M = 4096;
 const C = (() => {
-  const N = 30, pts = [];
+  const N = WORLD.points, pts = [];
   for (let i = 0; i < N; i++) {
-    const a = (i / N) * Math.PI * 2;
-    const r = 1350 * (1 + 0.17 * Math.sin(3 * a + 0.5) + 0.11 * Math.cos(5 * a + 1.3) + 0.05 * Math.sin(9 * a + 2));
+    const a = (i / N) * Math.PI * 2, r = WORLD.radius(a);
     pts.push(new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r));
   }
   const curve = new THREE.CatmullRomCurve3(pts, true, 'centripetal');
@@ -59,14 +143,7 @@ const C = (() => {
   const PSI = new Float64Array(M + 1), GR = new Float32Array(M + 1), K = new Float32Array(M + 1);
   let L = 0;
   for (let i = 0; i <= M; i++) { X[i] = sp[i].x; Z[i] = sp[i].z; if (i) L += Math.hypot(X[i] - X[i - 1], Z[i] - Z[i - 1]); }
-  // elevation profile: periodic Catmull-Rom through 16 heights + small rollers
-  const HV = [20, 24, 34, 28, 30, 52, 82, 112, 100, 72, 48, 54, 40, 30, 22, 20], n = HV.length;
-  for (let i = 0; i <= M; i++) {
-    const t = i / M, f = (t % 1) * n, j = Math.floor(f), u = f - j;
-    const p0 = HV[(j - 1 + n) % n], p1 = HV[j % n], p2 = HV[(j + 1) % n], p3 = HV[(j + 2) % n];
-    Y[i] = 0.5 * (2 * p1 + (-p0 + p2) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u * u + (-p0 + 3 * p1 - 3 * p2 + p3) * u * u * u)
-      + 0.8 * Math.sin(t * Math.PI * 2 * 29) + 0.4 * Math.sin(t * Math.PI * 2 * 53 + 1);
-  }
+  for (let i = 0; i <= M; i++) Y[i] = WORLD.elev((i % M) / M, X[i % M], Z[i % M]);
   for (let i = 0; i <= M; i++) {
     const a = i % M;
     let p = Math.atan2(X[a + 1] - X[a], Z[a + 1] - Z[a]);
@@ -79,9 +156,10 @@ const C = (() => {
     K[i] = (psiAt(i + w) - psiAt(i - w)) / (2 * w * ds);
     GR[i] = (Y[mod(i + w, M)] - Y[mod(i - w, M)]) / (2 * w * ds);
   }
-  let kS = Math.floor(M * 0.18), kE = Math.floor(M * 0.38);
-  for (let i = kS; i < M * 0.32; i++) if (Y[i] < Y[kS]) kS = i;
-  for (let i = kE; i < M * 0.5; i++) if (Y[i] > Y[kE]) kE = i;
+  const [[s0, s1], [e0, e1]] = WORLD.kom;
+  let kS = Math.floor(M * s0), kE = Math.floor(M * e0);
+  for (let i = kS; i < M * s1; i++) if (Y[i] < Y[kS]) kS = i;
+  for (let i = kE; i < M * e1; i++) if (Y[i] > Y[kE]) kE = i;
   const at = (s, o) => {
     const f = (mod(s, L) / L) * M, i = Math.min(M - 1, f | 0), u = f - i;
     o.x = lerp(X[i], X[i + 1], u); o.y = lerp(Y[i], Y[i + 1], u); o.z = lerp(Z[i], Z[i + 1], u);
@@ -111,7 +189,7 @@ const FS_OK = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled)
 renderer.setPixelRatio(Math.min(devicePixelRatio, TOUCH ? 1.5 : 1.75));
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.75;
+renderer.toneMappingExposure = WORLD.exposure;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 $('app').appendChild(renderer.domElement);
@@ -135,13 +213,14 @@ function canvasTex(w, h, draw, repeat = false, srgb = true) {
 }
 
 // sky, sun, fog
-const sunDir = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 36), THREE.MathUtils.degToRad(205));
+const SK = WORLD.sky;
+const sunDir = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - SK.elev), THREE.MathUtils.degToRad(SK.azim));
 const sky = new Sky();
 sky.scale.setScalar(10000);
-Object.assign(sky.material.uniforms.turbidity, { value: 2.6 });
-sky.material.uniforms.rayleigh.value = 1.1;
-sky.material.uniforms.mieCoefficient.value = 0.004;
-sky.material.uniforms.mieDirectionalG.value = 0.86;
+sky.material.uniforms.turbidity.value = SK.turbidity;
+sky.material.uniforms.rayleigh.value = SK.rayleigh;
+sky.material.uniforms.mieCoefficient.value = SK.mie;
+sky.material.uniforms.mieDirectionalG.value = SK.mieG;
 sky.material.uniforms.sunPosition.value.copy(sunDir);
 {
   const pmrem = new THREE.PMREMGenerator(renderer), envScene = new THREE.Scene();
@@ -149,28 +228,47 @@ sky.material.uniforms.sunPosition.value.copy(sunDir);
   scene.environment = pmrem.fromScene(envScene).texture;
   scene.add(sky);
 }
-scene.environmentIntensity = 0.55;
-scene.fog = new THREE.FogExp2(0xb9d2e6, 0.00019);
-scene.add(new THREE.HemisphereLight(0xd8ecff, 0x56663a, 0.7));
-const sun = new THREE.DirectionalLight(0xfff1dc, 3.4);
+scene.environmentIntensity = WORLD.env;
+scene.fog = new THREE.FogExp2(...WORLD.fog);
+scene.add(new THREE.HemisphereLight(...WORLD.hemi));
+const sun = new THREE.DirectionalLight(...WORLD.sun);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60, near: 10, far: 900 });
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.05;
 scene.add(sun, sun.target);
+// bloom (worlds that glow): render to an MSAA half-float target, OutputPass does tone mapping
+let composer = null;
+if (WORLD.bloom) {
+  const pr = renderer.getPixelRatio();
+  composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth * pr, innerHeight * pr, { type: THREE.HalfFloatType, samples: 4 }));
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), ...WORLD.bloom));
+  composer.addPass(new OutputPass());
+}
 
 // ============================================================ terrain
 const T_SIZE = 6400, T_SEG = 640, CELL = T_SIZE / T_SEG, TN = T_SEG + 1, HALF = T_SIZE / 2, ROAD_R = 150;
 const tH = new Float32Array(TN * TN), rD = new Float32Array(TN * TN).fill(1e12), rE = new Float32Array(TN * TN);
-function natH(x, z) {
-  const r = Math.hypot(x, z);
-  let h = 16 + fbm(x / 700 + 3.1, z / 700 - 1.7, 4) * 48 + fbm(x / 140, z / 140, 3) * 6;
-  h -= 42 * (1 - smooth(350, 1050, r)); // central lake
-  const m = smooth(2050, 3100, r); // mountain ring
-  if (m > 0) h += m * (160 + ridge(x / 1100, z / 1100) * 460);
-  return h;
-}
+const natH = (x, z) => WORLD.height(x, z);
+// lava rivers: from the crater lake through a breach in the rim, down the flank; surface only ever descends
+const RIVERS = (WORLD.rivers || []).map(([a0, rEnd, seed]) => {
+  const pts = [];
+  let y = WORLD.crater.y - 1;
+  for (let r = WORLD.crater.r - 10; r <= rEnd; r += 6) {
+    const a = a0 + 0.1 * Math.sin(r / 170 + seed) + 0.05 * Math.sin(r / 61 + seed * 2), x = Math.cos(a) * r, z = Math.sin(a) * r;
+    y = Math.min(y - 0.02, natH(x, z) - 2.5);
+    pts.push({ x, z, y, w: (7 + r / 140) * (1 + 1.6 * smooth(rEnd - 220, rEnd, r)), s: r });
+  }
+  return pts;
+});
+const lD = RIVERS.length ? new Float32Array(TN * TN).fill(1e12) : null, lE = lD && new Float32Array(TN * TN), lW = lD && new Float32Array(TN * TN);
+const lavaDist = (x, z) => {
+  if (!lD) return 1e6;
+  const ix = Math.round((x + HALF) / CELL), iz = Math.round((z + HALF) / CELL);
+  return ix < 0 || iz < 0 || ix >= TN || iz >= TN ? 1e6 : Math.max(0, Math.sqrt(lD[iz * TN + ix]) - lW[iz * TN + ix]);
+};
 function getH(x, z) {
   const fx = clamp((x + HALF) / CELL, 0, T_SEG - 1e-3), fz = clamp((z + HALF) / CELL, 0, T_SEG - 1e-3);
   const ix = fx | 0, iz = fz | 0, u = fx - ix, v = fz - iz, k = iz * TN + ix;
@@ -192,10 +290,21 @@ function buildTerrain() {
       }
     }
   }
+  for (const pts of RIVERS) for (const p of pts) {
+    const R = p.w + 40, rc = Math.ceil(R / CELL), cx = Math.round((p.x + HALF) / CELL), cz = Math.round((p.z + HALF) / CELL);
+    for (let gz = cz - rc; gz <= cz + rc; gz++) for (let gx = cx - rc; gx <= cx + rc; gx++) {
+      const k = gz * TN + gx, dx = gx * CELL - HALF - p.x, dz = gz * CELL - HALF - p.z, d = dx * dx + dz * dz;
+      if (d < lD[k]) { lD[k] = d; lE[k] = p.y; lW[k] = p.w; }
+    }
+  }
   for (let iz = 0; iz < TN; iz++) for (let ix = 0; ix < TN; ix++) {
     const k = iz * TN + ix, d = Math.sqrt(rD[k]);
     let h = natH(ix * CELL - HALF, iz * CELL - HALF);
     if (d < ROAD_R) h = lerp(rE[k] - 0.7, h, smooth(9, ROAD_R * 0.9, d));
+    if (lD && lD[k] < 1e11) { // carve the lava channel with raised levees
+      const ld = Math.sqrt(lD[k]), w = lW[k], bed = lE[k] - 1.4;
+      h = ld < w ? bed : lerp(bed, h + 3 * Math.exp(-(((ld - w - 6) / 6) ** 2)), smooth(w, w + 32, ld));
+    }
     tH[k] = h;
   }
   const geo = new THREE.PlaneGeometry(T_SIZE, T_SIZE, T_SEG, T_SEG).rotateX(-Math.PI / 2);
@@ -206,16 +315,9 @@ function buildTerrain() {
   }
   geo.computeVertexNormals();
   const nrm = geo.attributes.normal, col = new Float32Array(pos.count * 3), c = new THREE.Color();
-  const G1 = new THREE.Color(0x3f7426), G2 = new THREE.Color(0x7fae43), DRY = new THREE.Color(0xa8a35e), ROCK = new THREE.Color(0x857e74),
-    SNOW = new THREE.Color(0xf4f7fb), SAND = new THREE.Color(0xd8c690), VERGE = new THREE.Color(0x8f9a55);
   for (let k = 0; k < pos.count; k++) {
-    const x = pos.getX(k), z = pos.getZ(k), h = pos.getY(k), ny = nrm.getY(k), d = roadDist(x, z);
-    c.copy(G1).lerp(G2, clamp(0.5 + fbm(x / 110, z / 110, 3) * 1.4, 0, 1));
-    c.lerp(DRY, clamp(fbm(x / 420 + 9, z / 420, 2) * 1.6, 0, 0.55));
-    c.lerp(VERGE, smooth(16, 8, d) * 0.6);
-    c.lerp(SAND, smooth(3.2, 0.6, h));
-    c.lerp(ROCK, smooth(0.86, 0.66, ny));
-    c.lerp(SNOW, smooth(310, 370, h + fbm(x / 80, z / 80, 2) * 50) * smooth(0.55, 0.78, ny));
+    const x = pos.getX(k), z = pos.getZ(k);
+    WORLD.color(c, x, z, pos.getY(k), nrm.getY(k), roadDist(x, z), lavaDist(x, z));
     col[k * 3] = c.r; col[k * 3 + 1] = c.g; col[k * 3 + 2] = c.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -261,7 +363,7 @@ function buildRoad() {
   const vg = new THREE.BufferGeometry();
   vg.setAttribute('position', new THREE.Float32BufferAttribute(vpos, 3));
   vg.setIndex(vidx); vg.computeVertexNormals();
-  const verge = new THREE.Mesh(vg, new THREE.MeshStandardMaterial({ color: 0x6f7f45, roughness: 1 }));
+  const verge = new THREE.Mesh(vg, new THREE.MeshStandardMaterial({ color: WORLD.verge, roughness: 1 }));
   verge.receiveShadow = true;
   scene.add(road, verge);
 }
@@ -285,23 +387,64 @@ function buildWater() {
   }, true, false);
   waterTex.repeat.set(500, 500);
   const water = new THREE.Mesh(new THREE.PlaneGeometry(T_SIZE * 2, T_SIZE * 2).rotateX(-Math.PI / 2),
-    new THREE.MeshStandardMaterial({ color: 0x175d84, roughness: 0.05, metalness: 0.25, normalMap: waterTex, normalScale: new THREE.Vector2(0.4, 0.4), transparent: true, opacity: 0.93 }));
+    new THREE.MeshStandardMaterial({ color: WORLD.water, roughness: 0.05, metalness: 0.25, normalMap: waterTex, normalScale: new THREE.Vector2(0.4, 0.4), transparent: true, opacity: 0.93 }));
   water.receiveShadow = true;
   scene.add(water);
 }
 
-function instanced(geo, mat, list, shadow = true) {
+function instanced(geo, mat, list, shadow = true, tint = true) {
   const m = new THREE.InstancedMesh(geo, mat, list.length), o = new THREE.Object3D(), c = new THREE.Color();
   list.forEach((t, i) => {
     o.position.set(t.x, t.y, t.z); o.rotation.set(t.rx || 0, t.ry || 0, 0); o.scale.set(t.sx ?? t.s, t.sy ?? t.s, t.sz ?? t.s); o.updateMatrix();
-    m.setMatrixAt(i, o.matrix); if (t.c != null) m.setColorAt(i, c.set(t.c));
+    m.setMatrixAt(i, o.matrix); if (tint && t.c != null) m.setColorAt(i, c.set(t.c));
   });
   m.castShadow = shadow; m.receiveShadow = true;
   scene.add(m);
   return m;
 }
 
-function buildVegetation() {
+function buildVegetation() { if (WORLD.id === 'fuego') plantFuego(); else plantVerde(); }
+
+function plantFuego() {
+  const palms = [], jungle = [], dead = [], bushes = [], rocks = [], spires = [];
+  for (let n = 0; n < 120000 && (palms.length < 1500 || jungle.length < 3200 || dead.length < 900); n++) {
+    const x = rr(-2750, 2750), z = rr(-2750, 2750), d = roadDist(x, z), lava = lavaDist(x, z);
+    if (d < 12 || lava < 22) continue;
+    const h = getH(x, z), ry = rr(0, 6.28), dens = fbm(x / 380 + 4, z / 380 - 3, 3);
+    if (h < 1.2) continue;
+    if (h < 45 && (h < 12 || dens > -0.05)) { if (palms.length < 1500) palms.push({ x, y: h - 0.2, z, s: rr(0.8, 1.3), ry, c: pick([0x6f9a3a, 0x5d8a30, 0x84a842, 0x4f7a2a]) }); }
+    else if (h < 120 && dens > -0.12) { if (jungle.length < 3200) jungle.push({ x, y: h - 0.3, z, s: rr(1.5, 2.6), ry, c: pick([0x2f6a25, 0x3f7a2a, 0x2a5a20, 0x4f8a2f, 0x36702a]) }); }
+    else if (h >= 100 && h < 420 && (dens > 0.05 || lava < 150) && dead.length < 900) dead.push({ x, y: h - 0.2, z, s: rr(0.7, 1.3), ry, c: pick([0x2a2422, 0x3a302a, 0x1f1a18]) });
+  }
+  for (let n = 0; n < 12000 && bushes.length < 2600; n++) {
+    const x = rr(-2500, 2500), z = rr(-2500, 2500), d = roadDist(x, z), h = getH(x, z);
+    if (d < 8.5 || d > 320 || h < 2 || h > 130 || lavaDist(x, z) < 20) continue;
+    bushes.push({ x, y: h - 0.1, z, s: rr(0.5, 1.5), sy: rr(0.4, 0.9), ry: rr(0, 6), c: pick([0x2c5a20, 0x3a6a26, 0x46762c]) });
+  }
+  for (let n = 0; n < 20000 && rocks.length < 3800; n++) {
+    const x = rr(-2800, 2800), z = rr(-2800, 2800), d = roadDist(x, z), h = getH(x, z);
+    if (d < 10 || h < 0.3 || lavaDist(x, z) < 8) continue;
+    const s = rr(0.4, d > 150 ? 3 + h / 60 : 2.2);
+    rocks.push({ x, y: h - s * 0.3, z, s, sy: s * rr(0.5, 0.9), sx: s * rr(0.8, 1.5), ry: rr(0, 6), rx: rr(-0.3, 0.3), c: pick([0x2d2826, 0x3a3330, 0x4a2e24, 0x24201f]) });
+  }
+  for (let n = 0; n < 8000 && spires.length < 260; n++) {
+    const x = rr(-2000, 2000), z = rr(-2000, 2000), d = roadDist(x, z), h = getH(x, z);
+    if (d < 40 || h < 130 || h > 640 || lavaDist(x, z) < 15) continue;
+    const s = rr(3, 9);
+    spires.push({ x, y: h - 1, z, s, sy: s * rr(2.2, 4.5), ry: rr(0, 6), rx: rr(-0.12, 0.12), c: pick([0x2a2524, 0x342d2a, 0x231f1e]) });
+  }
+  const palm = palmGeometries(canvasTex), rockMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, flatShading: true });
+  instanced(palm.trunk, palm.trunkMat, palms, true, false);
+  instanced(palm.crown, palm.crownMat, palms);
+  instanced(new THREE.CylinderGeometry(0.14, 0.22, 2.2, 6).translate(0, 1.1, 0), new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 1 }), jungle);
+  instanced(mergeGeometries([new THREE.IcosahedronGeometry(1.35, 1).translate(0, 2.9, 0), new THREE.IcosahedronGeometry(0.95, 1).translate(0.6, 3.5, 0.3), new THREE.IcosahedronGeometry(0.9, 1).translate(-0.6, 3.3, -0.2)]), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, flatShading: true }), jungle);
+  instanced(deadTreeGeometry(), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true }), dead);
+  instanced(new THREE.IcosahedronGeometry(0.9, 1), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true }), bushes);
+  instanced(new THREE.DodecahedronGeometry(1, 0), rockMat, rocks);
+  instanced(spireGeometry(rand), rockMat, spires);
+}
+
+function plantVerde() {
   const pines = [], broad = [], bushes = [], rocks = [];
   for (let n = 0; n < 60000 && (pines.length < 6000 || broad.length < 3800); n++) {
     const x = rr(-HALF + 40, HALF - 40), z = rr(-HALF + 40, HALF - 40), d = roadDist(x, z);
@@ -442,7 +585,7 @@ function buildClouds() {
   for (let i = 0; i < 46; i++) {
     const a = rand() * 6.28, r = rr(1200, 5200), cx = Math.cos(a) * r, cz = Math.sin(a) * r, cy = rr(650, 1100);
     for (let j = 0, n = 5 + (rand() * 6) | 0; j < n; j++) {
-      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, fog: false, depthWrite: false, transparent: true, opacity: rr(0.55, 0.9), color: new THREE.Color().setHSL(0.6, 0.15, rr(0.88, 1)) }));
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, fog: false, depthWrite: false, transparent: true, opacity: rr(0.55, 0.9), color: new THREE.Color().setHSL(WORLD.clouds[0], WORLD.clouds[1], rr(0.82, 0.98)) }));
       const s = rr(260, 560);
       sp.scale.set(s * 1.6, s * 0.75, 1);
       sp.position.set(cx + rr(-300, 300), cy + rr(-40, 60), cz + rr(-200, 200));
@@ -809,7 +952,7 @@ function initMinimap() {
   mm.p = (x, z) => [W / 2 + (x - ox) * s, W / 2 + (z - oz) * s];
   mm.bg.width = mm.bg.height = W;
   const g = mm.bg.getContext('2d');
-  const grd = g.createRadialGradient(W / 2, W / 2, 10, W / 2, W / 2, W / 1.4); grd.addColorStop(0, '#2b6f9a'); grd.addColorStop(0.35, '#3c6a35'); grd.addColorStop(1, '#2b3b2a');
+  const grd = g.createRadialGradient(W / 2, W / 2, 10, W / 2, W / 2, W / 1.4); for (const [o, col] of WORLD.mini) grd.addColorStop(o, col);
   g.fillStyle = grd; g.fillRect(0, 0, W, W);
   const path = (i0, i1, col, w) => { g.strokeStyle = col; g.lineWidth = w; g.lineCap = 'round'; g.beginPath(); for (let i = i0; i <= i1; i++) g.lineTo(...mm.p(C.X[i % M], C.Z[i % M])); g.stroke(); };
   path(0, M, 'rgba(0,0,0,.5)', 14); path(0, M, '#e9ecef', 7);
@@ -1195,7 +1338,7 @@ function setCam(i) { game.cam = i; $('camname').textContent = CAMS[i]; }
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight); labels.setSize(innerWidth, innerHeight);
+  renderer.setSize(innerWidth, innerHeight); labels.setSize(innerWidth, innerHeight); composer?.setSize(innerWidth, innerHeight);
   fitHud();
   if (player) initProfile();
 });
@@ -1208,13 +1351,13 @@ function adaptResolution(raw) {
   if (perf.t < 2) return;
   const fps = perf.n / perf.t, pr = renderer.getPixelRatio();
   const next = fps < 45 ? Math.max(0.6, pr - 0.15) : fps > 57 ? Math.min(perf.max, pr + 0.1) : pr;
-  if (next !== pr) renderer.setPixelRatio(next);
+  if (next !== pr) { renderer.setPixelRatio(next); composer?.setPixelRatio(next); }
   perf.t = perf.n = 0;
 }
 
 // ============================================================ main loop
 const clock = new THREE.Clock();
-let elapsed = 0;
+let elapsed = 0, volcanoFX = null;
 function loop() {
   requestAnimationFrame(loop);
   const raw = clock.getDelta(), dt = Math.min(raw, 0.05);
@@ -1222,7 +1365,7 @@ function loop() {
   adaptResolution(raw);
   elapsed += dt;
   update(dt);
-  updateCamera(dt, elapsed);
+  if (!game.camLock) updateCamera(dt, elapsed); // camLock: scripted screenshots position the camera themselves
   for (const r of riders) placeRider(r, game.state === 'ride' ? dt : 0, camPos);
   const focus = player ? player.group.position : camLook;
   sun.target.position.copy(focus);
@@ -1232,16 +1375,21 @@ function loop() {
   if (crowd) updateCrowd(elapsed);
   if (player && (game.hudT -= dt) <= 0) { game.hudT = 0.1; updateHUD(); drawProfile(); drawMinimap(); }
   updateAudio();
-  renderer.render(scene, camera);
+  volcanoFX?.(dt, elapsed);
+  if (composer) composer.render(); else renderer.render(scene, camera);
   labels.render(scene, camera);
 }
 
 async function init() {
   const msg = (t) => { $('load-msg').textContent = t; return nextFrame(); };
   await document.fonts.load('italic 800 64px "Barlow Condensed"').catch(() => {});
-  await msg('Sculpting terrain'); buildTerrain();
+  await msg(`Sculpting ${WORLD.name}`); buildTerrain();
   await msg('Paving roads'); buildRoad(); buildWater();
-  await msg('Planting forests'); buildVegetation();
+  await msg(WORLD.id === 'fuego' ? 'Igniting the volcano' : 'Planting forests'); buildVegetation();
+  if (WORLD.id === 'fuego') {
+    const vents = [0.21, 0.28, 0.34, 0.38].map((f, i) => { C.at(f * L, tmpP); const lat = (i % 2 ? -1 : 1) * (ROAD_W / 2 + 15), x = tmpP.x - Math.cos(tmpP.psi) * lat, z = tmpP.z + Math.sin(tmpP.psi) * lat; return new THREE.Vector3(x, getH(x, z), z); });
+    volcanoFX = buildVolcanoFX({ scene, canvasTex, rand, rivers: RIVERS, crater: WORLD.crater, vents });
+  }
   await msg('Building arches'); buildArches(); buildCrowd(); buildClouds(); buildRiderGeo();
   await msg('Ready');
   game.state = 'menu';
@@ -1252,10 +1400,31 @@ async function init() {
 
 document.querySelectorAll('#m-mode button').forEach((b) => (b.onclick = () => { document.querySelectorAll('#m-mode button').forEach((x) => x.classList.remove('on')); b.classList.add('on'); }));
 $('m-bots').oninput = (e) => ($('m-bots-v').textContent = e.target.value);
-$('m-go').onclick = startRide;
+$('m-go').onclick = () => { saveSettings(); startRide(); };
+// menu settings survive the reload that switching worlds needs
+const SETTINGS = 'veloworld-settings';
+function saveSettings() {
+  localStorage.setItem(SETTINGS, JSON.stringify({ name: $('m-name').value, weight: $('m-weight').value, ftp: $('m-ftp').value, bots: $('m-bots').value, laps: document.querySelector('#m-mode .on').dataset.laps }));
+}
+try {
+  const st = JSON.parse(localStorage.getItem(SETTINGS) || 'null');
+  if (st) {
+    Object.assign($('m-name'), { value: st.name }); $('m-weight').value = st.weight; $('m-ftp').value = st.ftp; $('m-bots').value = $('m-bots-v').textContent = st.bots;
+    document.querySelectorAll('#m-mode button').forEach((b) => b.classList.toggle('on', b.dataset.laps === st.laps));
+  }
+} catch { /* corrupt settings: keep defaults */ }
+$('m-tagline').textContent = WORLD.tagline;
+document.querySelectorAll('#m-map button').forEach((b) => {
+  b.classList.toggle('on', b.dataset.map === WORLD_ID);
+  b.onclick = () => {
+    if (b.dataset.map === WORLD_ID) return;
+    saveSettings();
+    const q = new URLSearchParams(location.search); q.set('map', b.dataset.map); location.search = q.toString();
+  };
+});
 if (navigator.bluetooth) { $('m-trainer').onclick = connectTrainer; $('m-hrm').onclick = connectHR; }
 else { $('m-trainer').disabled = $('m-hrm').disabled = true; $('m-bt-status').textContent = `Web Bluetooth not available in this browser — ${TOUCH ? 'touch' : 'keyboard'} controls.`; }
 if (!FS_OK) $('t-fs').classList.add('hidden');
 if (TOUCH && !FS_OK && !navigator.standalone && !matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches) $('m-install').classList.remove('hidden');
-window.__game = { game, riders, C, update, input, act, setSprint, updateCamera, get player() { return player; } };
+window.__game = { game, riders, C, update, input, act, setSprint, updateCamera, camera, getH, get player() { return player; } };
 init();
