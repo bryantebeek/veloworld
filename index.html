@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>VELOWORLD — Virtual Cycling</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;0,800;1,800&family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#0b0f16;color:#fff;font-family:'Barlow',system-ui,sans-serif;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
+#app,#hud,#touch{touch-action:none}
+#app canvas{display:block}
+#labels{position:fixed;inset:0;pointer-events:none}
+.hidden{display:none!important}
+:root{--orange:#fc6719;--panel:linear-gradient(180deg,rgba(20,26,38,.74),rgba(10,14,22,.64))}
+.panel{background:var(--panel);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.08);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.35)}
+
+/* name tags */
+.tag{font:600 13px 'Barlow Condensed',sans-serif;color:#fff;white-space:nowrap;display:flex;gap:5px;align-items:center;
+  text-shadow:0 1px 2px #000,0 0 6px rgba(0,0,0,.7)}
+.tag i{font-style:normal;font-size:10px;font-weight:700;background:rgba(255,255,255,.92);color:#111;padding:0 3px;border-radius:2px;text-shadow:none}
+.tag b{color:#ffd23f;font-weight:700}
+
+/* HUD */
+#hud{position:fixed;inset:0;pointer-events:none;font-family:'Barlow Condensed',sans-serif}
+#power{position:absolute;left:18px;top:18px;width:236px;padding:12px 16px 14px}
+.big{font-size:74px;font-weight:800;line-height:.86;letter-spacing:-1px;font-variant-numeric:tabular-nums}
+.big small{font-size:24px;color:var(--orange);margin-left:4px;letter-spacing:0}
+.sub{font-size:26px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+.sub small{font-size:15px;color:#aab4c4;margin-left:3px;font-weight:600}
+.stats{display:flex;justify-content:space-between;margin-top:8px;border-top:1px solid rgba(255,255,255,.1);padding-top:8px}
+.stats div{display:flex;flex-direction:column;align-items:flex-start}
+.stats b{font-size:22px;font-variant-numeric:tabular-nums}
+.stats small{font-size:11px;color:#8e9aae;text-transform:uppercase;letter-spacing:.08em}
+#h-hr::before{content:'♥ ';color:#ff4d6d;font-size:16px}
+.energy{margin-top:10px;height:7px;border-radius:4px;background:rgba(255,255,255,.12);overflow:hidden}
+.energy i{display:block;height:100%;width:100%;background:linear-gradient(90deg,#ff3d3d,#ffb63d 40%,#3ddc84);border-radius:4px;transition:width .2s}
+.meta{display:flex;justify-content:space-between;margin-top:6px;font-size:12px;color:#8e9aae;letter-spacing:.06em}
+#h-draft{color:#5ad1ff;font-weight:700;opacity:0;transition:opacity .3s}
+
+#top{position:absolute;left:50%;top:16px;transform:translateX(-50%);display:flex;gap:4px;padding:8px 10px}
+#top > div{display:flex;flex-direction:column;align-items:center;min-width:92px;padding:0 10px}
+#top > div + div{border-left:1px solid rgba(255,255,255,.1)}
+#top b{font-size:34px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+#top small{font-size:12px;color:#8e9aae;text-transform:uppercase;letter-spacing:.1em;margin-top:3px}
+
+#grade{position:absolute;right:252px;top:18px;padding:8px 14px;text-align:center;min-width:104px}
+#grade b{font-size:46px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+#grade small{display:block;font-size:12px;color:#8e9aae;letter-spacing:.1em}
+#minimap{position:absolute;right:18px;top:18px;width:220px;height:220px;border-radius:12px}
+#riders{position:absolute;right:18px;top:250px;width:220px;padding:6px 0;font-size:15px}
+#riders .r{display:grid;grid-template-columns:24px 1fr 38px 44px;align-items:center;padding:3px 10px;gap:4px}
+#riders .r.me{background:linear-gradient(90deg,rgba(252,103,25,.85),rgba(252,103,25,.35))}
+#riders .r span:nth-child(1){color:#8e9aae;font-weight:700;font-size:13px}
+#riders .r span:nth-child(2){white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+#riders .r span:nth-child(3){color:#ffd23f;font-weight:700;text-align:right;font-size:14px}
+#riders .r span:nth-child(4){text-align:right;font-variant-numeric:tabular-nums;color:#cfd6e2;font-size:14px}
+#riders .hd{padding:2px 10px 6px;font-size:11px;letter-spacing:.12em;color:#8e9aae;border-bottom:1px solid rgba(255,255,255,.08);margin-bottom:4px}
+
+#pu{pointer-events:auto;cursor:pointer;position:absolute;left:18px;top:236px;width:70px;height:70px;border-radius:50%;display:grid;place-items:center;
+  background:conic-gradient(var(--orange) var(--p,0%),rgba(255,255,255,.1) 0);box-shadow:0 6px 20px rgba(0,0,0,.4);transition:transform .2s}
+#pu::before{content:'';position:absolute;inset:5px;border-radius:50%;background:rgba(12,16,26,.88)}
+#pu span{position:relative;font-size:32px}
+#pu em{position:absolute;bottom:-18px;font-size:11px;font-style:normal;letter-spacing:.1em;color:#cfd6e2;white-space:nowrap}
+#pu.ready{animation:pulse 1s infinite}
+@keyframes pulse{50%{transform:scale(1.08)}}
+
+#segment{position:absolute;left:50%;top:92px;transform:translateX(-50%);width:340px;padding:8px 14px;border-left:5px solid #e3242b}
+#segment .row{display:flex;justify-content:space-between;align-items:baseline}
+#seg-name{font-size:20px;font-weight:800;letter-spacing:.05em}
+#seg-time{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+#segment .bar{height:5px;background:rgba(255,255,255,.12);border-radius:3px;margin:6px 0 4px;overflow:hidden}
+#seg-bar{height:100%;width:0;background:#e3242b}
+#segment .foot{font-size:13px;color:#aab4c4;display:flex;justify-content:space-between}
+
+#profile{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);width:58vw;height:86px;border-radius:10px;background:rgba(10,14,22,.55);backdrop-filter:blur(6px)}
+#help{position:absolute;left:18px;bottom:16px;padding:10px 14px;font-family:'Barlow',sans-serif;font-size:12px;line-height:1.65;color:#cfd6e2}
+#help kbd{display:inline-block;min-width:20px;text-align:center;background:rgba(255,255,255,.14);border-radius:4px;padding:0 5px;margin-right:4px;font:600 11px 'Barlow',sans-serif;color:#fff}
+#camname{position:absolute;right:18px;bottom:16px;padding:6px 12px;font-size:14px;letter-spacing:.1em;color:#cfd6e2}
+
+#toasts{position:absolute;left:50%;top:170px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:8px}
+.toast{padding:10px 20px;border-radius:30px;background:rgba(12,16,26,.85);font-size:20px;font-weight:700;letter-spacing:.03em;
+  box-shadow:0 8px 24px rgba(0,0,0,.4);animation:tin .35s cubic-bezier(.2,1.4,.4,1),tout .4s ease-in forwards;animation-delay:0s,var(--d,2.6s);white-space:nowrap}
+.toast.orange{background:linear-gradient(90deg,#fc6719,#ff9a3d)}
+.toast.red{background:linear-gradient(90deg,#c81e2b,#ff4b55)}
+.toast.green{background:linear-gradient(90deg,#0f9d58,#3ddc84)}
+.toast.blue{background:linear-gradient(90deg,#1e63d6,#4fa3ff)}
+@keyframes tin{from{opacity:0;transform:translateY(-12px) scale(.9)}}
+@keyframes tout{to{opacity:0;transform:translateY(-8px)}}
+#countdown{position:absolute;left:50%;top:38%;transform:translate(-50%,-50%);font-size:180px;font-weight:800;font-style:italic;
+  text-shadow:0 10px 40px rgba(0,0,0,.5);color:#fff}
+#countdown.go{color:var(--orange)}
+#pause{position:fixed;inset:0;display:grid;place-items:center;background:rgba(5,8,14,.55);font:800 italic 80px 'Barlow Condensed';letter-spacing:.05em}
+
+/* menu */
+#menu{position:fixed;inset:0;display:flex;overflow-y:auto;touch-action:pan-y;padding:24px 0 24px 7vw;background:linear-gradient(90deg,rgba(6,9,15,.88) 0%,rgba(6,9,15,.55) 38%,rgba(6,9,15,0) 65%)}
+.card{width:min(420px,86vw);margin:auto 0}
+.logo{font:800 italic 76px/0.9 'Barlow Condensed',sans-serif;letter-spacing:-1px}
+.logo span{color:var(--orange)}
+.tagline{font:600 15px 'Barlow',sans-serif;color:#aab4c4;letter-spacing:.24em;text-transform:uppercase;margin:10px 0 28px}
+.field{margin-bottom:14px}
+.field label{display:flex;justify-content:space-between;font:600 12px 'Barlow',sans-serif;letter-spacing:.12em;text-transform:uppercase;color:#8e9aae;margin-bottom:6px}
+.field label output{color:#fff}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+input[type=text],input[type=number],select{width:100%;padding:11px 12px;border-radius:9px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.07);
+  color:#fff;font:600 16px 'Barlow',sans-serif;outline:none}
+input:focus,select:focus{border-color:var(--orange)}
+select option{background:#141a26}
+input[type=range]{width:100%;accent-color:var(--orange)}
+.seg{display:flex;background:rgba(255,255,255,.07);border-radius:9px;padding:3px;border:1px solid rgba(255,255,255,.12)}
+.seg button{flex:1;padding:9px 0;border:0;border-radius:7px;background:none;color:#aab4c4;font:700 14px 'Barlow Condensed';letter-spacing:.08em;cursor:pointer}
+.seg button.on{background:var(--orange);color:#fff}
+.bt{display:flex;gap:10px;margin:6px 0 4px}
+.bt button{flex:1;padding:10px;border-radius:9px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.04);color:#fff;font:600 13px 'Barlow';cursor:pointer}
+.bt button:hover{border-color:#fff}
+.bt button.ok{border-color:#3ddc84;color:#3ddc84}
+#m-bt-status{font-size:12px;color:#8e9aae;min-height:16px}
+#m-go{margin-top:18px;width:100%;padding:16px;border:0;border-radius:12px;background:linear-gradient(90deg,#fc6719,#ff8c3a);color:#fff;
+  font:800 italic 28px 'Barlow Condensed';letter-spacing:.1em;cursor:pointer;box-shadow:0 10px 30px rgba(252,103,25,.35);transition:transform .15s}
+#m-go:hover{transform:translateY(-2px)}
+
+#loading{position:fixed;inset:0;display:grid;place-items:center;background:#0b0f16;z-index:10}
+#loading .logo{text-align:center}
+#load-msg{text-align:center;margin-top:18px;color:#8e9aae;font:500 14px 'Barlow';letter-spacing:.15em;text-transform:uppercase}
+
+#results{position:fixed;inset:0;display:grid;place-items:center;background:rgba(5,8,14,.6);backdrop-filter:blur(4px)}
+#results .panel{width:480px;padding:22px 26px;font-family:'Barlow Condensed'}
+#results h2{font:800 italic 48px 'Barlow Condensed';margin-bottom:4px}
+#results h2 span{color:var(--orange)}
+#results table{width:100%;border-collapse:collapse;margin:12px 0 16px;font-size:17px}
+#results td{padding:5px 6px;border-bottom:1px solid rgba(255,255,255,.07)}
+#results tr.me td{background:rgba(252,103,25,.35)}
+#results td:first-child{color:#8e9aae;width:34px;font-weight:700}
+#results td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+#results button{padding:12px 20px;border-radius:10px;border:0;background:var(--orange);color:#fff;font:800 18px 'Barlow Condensed';letter-spacing:.08em;cursor:pointer;margin-right:8px}
+#results button.ghost{background:rgba(255,255,255,.1)}
+
+/* touch controls */
+#touch{position:fixed;inset:0;pointer-events:none;font-family:'Barlow Condensed',sans-serif}
+body:not(.touch) #touch,body.touch #help,body.touch #camname{display:none!important}
+#touch button{pointer-events:auto;border:0;color:#fff;background:rgba(14,19,30,.62);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  border:1px solid rgba(255,255,255,.14);box-shadow:0 6px 18px rgba(0,0,0,.35);font:800 30px 'Barlow Condensed';display:grid;place-items:center;transition:transform .08s,background .08s}
+#touch button.down{transform:scale(.92);background:rgba(252,103,25,.85)}
+.t-steer{position:absolute;left:calc(16px + env(safe-area-inset-left));bottom:calc(16px + env(safe-area-inset-bottom));display:flex;gap:12px}
+.t-steer button{width:78px;height:78px;border-radius:50%}
+.t-small{position:absolute;left:calc(16px + env(safe-area-inset-left));bottom:calc(106px + env(safe-area-inset-bottom));display:flex;gap:10px}
+.t-small button{width:50px;height:50px;border-radius:14px;font-size:22px!important}
+.t-power{position:absolute;right:calc(16px + env(safe-area-inset-right));bottom:calc(16px + env(safe-area-inset-bottom));display:flex;flex-direction:column;align-items:center;gap:8px}
+.t-power button{width:84px;height:84px;border-radius:22px;font-size:44px!important}
+.t-power button[data-arg="10"]{background:rgba(252,103,25,.7)}
+#t-target{font-size:20px;font-weight:800;text-shadow:0 1px 4px #000;font-variant-numeric:tabular-nums}
+#t-target small{font-size:12px;color:#cfd6e2;margin-left:2px}
+#rotate{display:none}
+@media (orientation:portrait) and (pointer:coarse){#rotate{display:grid;position:fixed;inset:0;z-index:20;place-items:center;background:#0b0f16;font:800 italic 34px 'Barlow Condensed';text-align:center;padding:30px}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="hud" class="hidden">
+  <div id="power" class="panel">
+    <div class="big"><span id="h-power">0</span><small>W</small></div>
+    <div class="sub"><span id="h-wkg">0.0</span><small>w/kg</small></div>
+    <div class="stats">
+      <div><b id="h-hr">--</b><small>bpm</small></div>
+      <div><b id="h-cad">0</b><small>rpm</small></div>
+      <div><b id="h-avg">0</b><small>avg w</small></div>
+      <div><b id="h-kj">0</b><small>kJ</small></div>
+    </div>
+    <div class="energy"><i id="h-energy"></i></div>
+    <div class="meta"><span id="h-src">KEYBOARD · TARGET 200W</span><span id="h-draft">DRAFT 0%</span></div>
+  </div>
+  <div id="pu" data-act="powerup"><span id="pu-icon"></span><em id="pu-txt"></em></div>
+
+  <div id="top" class="panel">
+    <div><b id="h-speed">0.0</b><small>km/h</small></div>
+    <div><b id="h-dist">0.00</b><small>km</small></div>
+    <div><b id="h-time">0:00</b><small>time</small></div>
+    <div><b id="h-elev">0</b><small>m climbed</small></div>
+    <div id="h-lapbox"><b id="h-lap">1</b><small id="h-laplbl">lap</small></div>
+  </div>
+  <div id="segment" class="panel hidden">
+    <div class="row"><span id="seg-name">KOM</span><span id="seg-time">0:00</span></div>
+    <div class="bar"><div id="seg-bar"></div></div>
+    <div class="foot"><span id="seg-togo"></span><span id="seg-lead"></span></div>
+  </div>
+  <div id="grade" class="panel"><b id="h-grade">0.0%</b><small>GRADIENT</small></div>
+  <canvas id="minimap" class="panel" width="440" height="440"></canvas>
+  <div id="riders" class="panel"></div>
+  <canvas id="profile"></canvas>
+  <div id="help" class="panel">
+    <div><kbd>↑</kbd><kbd>↓</kbd> power ±10W <span style="opacity:.6">(shift ±25)</span> · wheel</div>
+    <div><kbd>←</kbd><kbd>→</kbd> steer · <kbd>Space</kbd> power-up · <kbd>R</kbd> Ride On</div>
+    <div><kbd>1</kbd>–<kbd>6</kbd> / <kbd>C</kbd> camera · <kbd>P</kbd> pause · <kbd>M</kbd> mute · <kbd>H</kbd> hide</div>
+  </div>
+  <div id="camname" class="panel">CHASE CAM</div>
+  <div id="toasts"></div>
+  <div id="countdown"></div>
+</div>
+<div id="touch" class="hidden">
+  <div class="t-small"><button data-act="cam" title="Camera">🎥</button><button data-act="rideOn" title="Ride On">👍</button><button data-act="pause" title="Pause">⏸</button><button data-act="mute" title="Mute">🔈</button></div>
+  <div class="t-steer"><button data-act="steer" data-arg="-1" data-hold>◀</button><button data-act="steer" data-arg="1" data-hold>▶</button></div>
+  <div class="t-power"><button data-act="power" data-arg="10" data-hold>+</button><div id="t-target">200<small>W</small></div><button data-act="power" data-arg="-10" data-hold>−</button></div>
+</div>
+<div id="pause" class="hidden">PAUSED</div>
+<div id="rotate">↻ Rotate your device<br>to landscape</div>
+
+<div id="menu" class="hidden">
+  <div class="card">
+    <div class="logo">VELO<span>WORLD</span></div>
+    <div class="tagline">Virtual cycling · Isla Verde</div>
+    <div class="field"><label>Rider name</label><input id="m-name" type="text" value="You" maxlength="18"></div>
+    <div class="grid2">
+      <div class="field"><label>Weight (kg)</label><input id="m-weight" type="number" value="75" min="40" max="150"></div>
+      <div class="field"><label>FTP (W)</label><input id="m-ftp" type="number" value="250" min="80" max="500"></div>
+    </div>
+    <div class="field"><label>Mode</label>
+      <div class="seg" id="m-mode">
+        <button data-laps="0" class="on">FREE RIDE</button><button data-laps="1">RACE 1 LAP</button><button data-laps="2">RACE 2 LAPS</button>
+      </div>
+    </div>
+    <div class="field"><label>Bots <output id="m-bots-v">20</output></label><input id="m-bots" type="range" min="0" max="40" value="20"></div>
+    <div class="field"><label>Smart trainer / sensors <span style="text-transform:none;letter-spacing:0">(optional, Chrome)</span></label>
+      <div class="bt"><button id="m-trainer">⚡ Trainer / Power</button><button id="m-hrm">♥ Heart rate</button></div>
+      <div id="m-bt-status"></div>
+    </div>
+    <button id="m-go">RIDE ON ▸</button>
+  </div>
+</div>
+
+<div id="results" class="hidden"></div>
+<div id="loading"><div><div class="logo">VELO<span>WORLD</span></div><div id="load-msg">Loading</div></div></div>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>
