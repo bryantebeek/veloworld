@@ -7,7 +7,7 @@ const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
 // tileable Voronoi crust: glowing cracks between dark plates; `heat` adds molten cell centres
-function lavaTexture(canvasTex, rand, heat) {
+export function lavaTexture(canvasTex, rand, heat) {
   const S = 256, pts = Array.from({ length: 30 }, () => [rand() * S, rand() * S]);
   const RAMP = [[0, 12, 4, 3], [0.35, 90, 14, 4], [0.6, 220, 70, 10], [0.85, 255, 170, 40], [1, 255, 240, 170]];
   return canvasTex(S, S, (g) => {
@@ -50,19 +50,19 @@ function smoke(scene, tex, rand, o) {
     sprites.push(sp);
   }
   const c0 = new THREE.Color(o.c0), c1 = new THREE.Color(o.c1);
-  return (t) => {
+  return (t, boost = 0) => { // boost 0..1 thickens, darkens and inflates the column (eruptions)
     for (const sp of sprites) {
       const d = sp.userData, age = (t + d.off) % o.life, u = age / o.life, grow = 1 + u * 3;
-      sp.position.set(d.origin.x + d.jx * grow + o.wind.x * age, d.origin.y + o.rise * age, d.origin.z + d.jz * grow + o.wind.z * age);
-      sp.scale.setScalar(o.s0 + (o.s1 - o.s0) * Math.pow(u, 0.7));
-      sp.material.opacity = o.op * smooth(0, 0.1, u) * (1 - smooth(0.55, 1, u));
-      sp.material.color.copy(c0).lerp(c1, smooth(0, 0.5, u));
+      sp.position.set(d.origin.x + d.jx * grow + o.wind.x * age, d.origin.y + o.rise * (1 + boost * 0.5) * age, d.origin.z + d.jz * grow + o.wind.z * age);
+      sp.scale.setScalar((o.s0 + (o.s1 - o.s0) * Math.pow(u, 0.7)) * (1 + boost * 0.5));
+      sp.material.opacity = Math.min(1, o.op * (1 + boost * 0.6)) * smooth(0, 0.1, u) * (1 - smooth(0.55, 1, u));
+      sp.material.color.copy(c0).lerp(c1, smooth(0, 0.5, u)).multiplyScalar(1 - boost * 0.35);
       sp.material.rotation += d.spin * 0.016;
     }
   };
 }
 
-export function buildVolcanoFX({ scene, canvasTex, rand, rivers, crater, vents }) {
+export function buildVolcanoFX({ scene, canvasTex, rand, rivers, crater, vents, getH, onEruption, onThunder }) {
   // lava lake in the crater
   const lakeTex = lavaTexture(canvasTex, rand, 0.55);
   lakeTex.repeat.set(7, 7);
@@ -118,18 +118,104 @@ export function buildVolcanoFX({ scene, canvasTex, rand, rivers, crater, vents }
   embers.frustumCulled = false;
   scene.add(embers);
 
-  return (dt, t) => {
+  // ---- eruptions: fountain, bombs with smoke trails, lightning in the plume, ashfall afterwards
+  const CR = V(0, crater.y + 4, 0);
+  const FN = 1400, fpos = new Float32Array(FN * 3).fill(-1e5), fvel = new Float32Array(FN * 3);
+  const fg = new THREE.BufferGeometry(); fg.setAttribute('position', new THREE.BufferAttribute(fpos, 3));
+  const fountain = new THREE.Points(fg, new THREE.PointsMaterial({ map: dot, color: new THREE.Color(5, 1.8, 0.4), size: 7, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  fountain.frustumCulled = false; scene.add(fountain);
+  let fNext = 0;
+  const bombMat = new THREE.MeshStandardMaterial({ color: 0x1a0c08, emissive: 0xff6a1a, emissiveIntensity: 4, flatShading: true });
+  const bombs = Array.from({ length: 12 }, () => { const m = new THREE.Mesh(new THREE.IcosahedronGeometry(2.6, 0), bombMat); m.visible = false; m.userData = { v: V(0, 0, 0), at: 0 }; scene.add(m); return m; });
+  const trailTex = smokeTexture(canvasTex, rand);
+  const trail = Array.from({ length: 240 }, () => { const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: trailTex, transparent: true, depthWrite: false, color: 0x3a3330 })); sp.visible = false; sp.userData = { age: 0, life: 1 }; scene.add(sp); return sp; });
+  let trailI = 0;
+  const puff = (p, size, life) => { const sp = trail[trailI++ % trail.length]; sp.position.copy(p); sp.visible = true; sp.userData = { age: 0, life, size }; };
+  const boltPts = new Float32Array(33 * 3), bolt = new THREE.Line(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(boltPts, 3)), new THREE.LineBasicMaterial({ color: new THREE.Color(6, 6, 9) }));
+  bolt.visible = false; bolt.frustumCulled = false; scene.add(bolt);
+  let boltT = 0, boltNext = 0;
+  const strike = () => {
+    const a = V((rand() - 0.5) * 300, crater.y + 280 + rand() * 500, (rand() - 0.5) * 300).add(V(60, 0, 25)), b = a.clone().add(V((rand() - 0.5) * 320, -120 - rand() * 220, (rand() - 0.5) * 320));
+    const pts = [a, b];
+    for (let lvl = 0, off = 90; lvl < 5; lvl++, off *= 0.55) for (let i = pts.length - 1; i > 0; i--) pts.splice(i, 0, pts[i - 1].clone().lerp(pts[i], 0.5).add(V((rand() - 0.5) * off, (rand() - 0.5) * off, (rand() - 0.5) * off)));
+    pts.forEach((q, i) => q.toArray(boltPts, i * 3));
+    bolt.geometry.attributes.position.needsUpdate = true; bolt.visible = true; boltT = 0.13;
+    onThunder?.(a);
+  };
+  const AN = 1600, apos = new Float32Array(AN * 3), ag = new THREE.BufferGeometry();
+  for (let i = 0; i < AN; i++) { apos[i * 3] = (rand() - 0.5) * 120; apos[i * 3 + 1] = rand() * 40; apos[i * 3 + 2] = (rand() - 0.5) * 120; }
+  ag.setAttribute('position', new THREE.BufferAttribute(apos, 3));
+  const ashMat = new THREE.PointsMaterial({ color: 0x8a817c, size: 0.12, transparent: true, opacity: 0, depthWrite: false });
+  const ash = new THREE.Points(ag, ashMat); ash.frustumCulled = false; scene.add(ash);
+  let ashLevel = 0, eStart = -1e9, eNext = 35;
+  const tmpV = V(0, 0, 0);
+
+  const update = (dt, t, cam) => {
     riverTex.offset.y -= dt * 0.035;
     lakeTex.offset.set(Math.sin(t * 0.05) * 0.05, t * 0.004);
-    glow.intensity = 3.2 + Math.sin(t * 2.3) * 0.25 + Math.sin(t * 5.1) * 0.15;
-    plume(t); steam(t);
+    if (t > eNext) { eStart = t; eNext = t + 55 + rand() * 60; onEruption?.(); }
+    const e = t - eStart, I = smooth(0, 1.2, e) * (1 - smooth(9, 15, e));
+    if (I > 0) ashLevel = Math.min(1, ashLevel + dt * 0.08); else ashLevel = Math.max(0, ashLevel - dt * 0.02);
+    glow.color.setRGB(1, 0.35, 0.12);
+    glow.intensity = (3.2 + Math.sin(t * 2.3) * 0.25 + Math.sin(t * 5.1) * 0.15) * (1 + I * 2.5);
+    plume(t, I); steam(t);
+    // fountain
+    if (I > 0.15) for (fNext += dt * 520 * I; fNext >= 1; fNext--) {
+      const i = Math.floor(rand() * FN), a = rand() * 6.28, r = rand() * 55;
+      fpos[i * 3] = Math.cos(a) * r; fpos[i * 3 + 1] = CR.y; fpos[i * 3 + 2] = Math.sin(a) * r;
+      fvel[i * 3] = (rand() - 0.5) * 40; fvel[i * 3 + 1] = 40 + rand() * 60; fvel[i * 3 + 2] = (rand() - 0.5) * 40;
+    }
+    for (let i = 0; i < FN; i++) {
+      if (fpos[i * 3 + 1] < -1e4) continue;
+      fvel[i * 3 + 1] -= 9.8 * dt;
+      fpos[i * 3] += fvel[i * 3] * dt; fpos[i * 3 + 1] += fvel[i * 3 + 1] * dt; fpos[i * 3 + 2] += fvel[i * 3 + 2] * dt;
+      if (fpos[i * 3 + 1] < CR.y - 40) fpos[i * 3 + 1] = -1e5;
+    }
+    fg.attributes.position.needsUpdate = true;
+    // bombs: launched through the first seconds, trail smoke, burst on impact
+    bombs.forEach((b, i) => {
+      const d = b.userData;
+      if (!b.visible && e > i * 0.4 && e < i * 0.4 + dt * 1.5) {
+        const az = rand() * 6.28, el = 0.9 + rand() * 0.45, sp = 70 + rand() * 45;
+        b.position.copy(CR); d.v.set(Math.cos(az) * Math.cos(el) * sp, Math.sin(el) * sp, Math.sin(az) * Math.cos(el) * sp); b.visible = true; d.at = 0;
+      }
+      if (!b.visible) return;
+      d.v.y -= 9.8 * dt; b.position.addScaledVector(d.v, dt); b.rotation.x += dt * 3; b.rotation.z += dt * 2;
+      if ((d.at += dt) > 0.05) { d.at = 0; puff(b.position, 10, 6); }
+      if (b.position.y < getH(b.position.x, b.position.z)) { for (let k = 0; k < 6; k++) puff(tmpV.copy(b.position).add(V((rand() - 0.5) * 20, rand() * 8, (rand() - 0.5) * 20)), 30, 9); b.visible = false; }
+    });
+    for (const sp of trail) {
+      if (!sp.visible) continue;
+      const d = sp.userData, u = (d.age += dt) / d.life;
+      if (u >= 1) { sp.visible = false; continue; }
+      sp.position.y += dt * 3; sp.scale.setScalar(d.size * (1 + u * 3)); sp.material.opacity = 0.75 * (1 - u);
+    }
+    // lightning while the column is thick
+    if ((boltT -= dt) <= 0) bolt.visible = false;
+    if (I > 0.5 && t > boltNext) { boltNext = t + 0.3 + rand() * 1.4; strike(); }
+    if (bolt.visible) { glow.color.setRGB(0.75, 0.8, 1); glow.intensity = 60; }
+    // ash drifting down around the camera after an eruption
+    ashMat.opacity = ashLevel * 0.85;
+    if (ashLevel > 0) {
+      for (let i = 0; i < AN; i++) { // world-space flakes wrapped into a 120 m box around the camera
+        const k = i * 3;
+        apos[k + 1] -= dt * (1 + (i % 7) * 0.2); apos[k] += dt * (0.8 + Math.sin(t + i) * 0.5);
+        if (apos[k] - cam.x > 60) apos[k] -= 120; else if (apos[k] - cam.x < -60) apos[k] += 120;
+        if (apos[k + 2] - cam.z > 60) apos[k + 2] -= 120; else if (apos[k + 2] - cam.z < -60) apos[k + 2] += 120;
+        if (apos[k + 1] < cam.y - 8) apos[k + 1] += 44; else if (apos[k + 1] > cam.y + 36) apos[k + 1] -= 44;
+      }
+      ag.attributes.position.needsUpdate = true;
+    }
     for (let i = 0; i < N; i++) {
       if ((life[i] -= dt) <= 0) { spawn(i); continue; }
       vel[i * 3 + 1] *= 0.995;
       epos[i * 3] += (vel[i * 3] + 1.2) * dt; epos[i * 3 + 1] += vel[i * 3 + 1] * dt; epos[i * 3 + 2] += (vel[i * 3 + 2] + 0.5) * dt;
     }
     eg.attributes.position.needsUpdate = true;
+    return I + (bolt.visible ? 0.15 : 0); // shake / rumble level
   };
+  update.erupt = () => (eNext = 0);
+  return update;
 }
 
 // ---------------------------------------------------------------- flora

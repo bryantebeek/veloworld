@@ -13,7 +13,7 @@ VELOWORLD — a Zwift-style cycling game in Three.js. Live at https://bryantebee
 - `window.__game` exposes `game`, `riders`, `player`, `update(dt)`, `input`, `act`, `setSprint` for scripted checks — step the sim with `update()` rather than waiting on frames.
 - Add `?touch` to the URL to force the touch UI on a desktop browser; `?map=fuego` loads the volcano world.
 - For framed screenshots set `__game.game.camLock = true` and move `__game.camera` yourself (camera smoothing barely moves at SwiftShader frame rates).
-- Headless/preview browsers render with SwiftShader (CPU); frame rate there is meaningless.
+- Headless/preview browsers render with SwiftShader (CPU); frame rate there is meaningless. Use `?quality=low` there (no grass/bloom), otherwise frames take so long that scripted evaluation times out.
 
 ## Quality bar
 - Aim for polished, AAA-feeling results in Zwift style — visuals, HUD and game feel.

@@ -4,6 +4,8 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { initBodies, createBody, poseBody } from './body.js';
 import { buildVolcanoFX, palmGeometries, deadTreeGeometry, spireGeometry } from './volcano.js';
+import { U, addWind, terrainMaterial, seaDepthTexture, waterMaterial, makeGrass, makeBirds } from './environment.js';
+import { buildTunnels, tunnelSize } from './tunnel.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -53,8 +55,8 @@ const powerFor = (r, v, grade, draft) => Math.max(0, v * resist(v, grade, r.mass
 const rollers = (t) => 0.8 * Math.sin(t * Math.PI * 2 * 29) + 0.4 * Math.sin(t * Math.PI * 2 * 53 + 1);
 const angDist = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 const cone = (r) => 560 * Math.exp(-((r / 1000) ** 1.5)); // Fuego's volcano profile
-const FUEGO_A0 = 0.42 * Math.PI * 2;
-const WORLD_CRATER_FLOOR = 640; // bearing where the route climbs highest onto the volcano
+const FUEGO_RP = 1250, FUEGO_CAVE = 175; // radius where the route enters the mountain; cavern floor height
+const WORLD_CRATER_FLOOR = 640;
 const WORLDS = {
   verde: (() => {
     const HV = [20, 24, 34, 28, 30, 52, 82, 112, 100, 72, 48, 54, 40, 30, 22, 20], n = HV.length; // periodic Catmull-Rom profile
@@ -86,6 +88,8 @@ const WORLDS = {
       sky: { elev: 36, azim: 205, turbidity: 2.6, rayleigh: 1.1, mie: 0.004, mieG: 0.86 },
       fog: [0xb9d2e6, 0.00019], exposure: 0.75, env: 0.55, hemi: [0xd8ecff, 0x56663a, 0.7], sun: [0xfff1dc, 3.4],
       water: 0x175d84, verge: 0x6f7f45, clouds: [0.6, 0.15], mini: [[0, '#2b6f9a'], [0.35, '#3c6a35'], [1, '#2b3b2a']],
+      sea: { deep: 0x0f4d73, shallow: 0x3fb8b0 }, sprint: [0.915, 0.972], pu: [0.12, 0.63],
+      birds: { color: 0x2a2a2e, flocks: [[0, 70, 0, 300, 14, 0.05], [1500, 120, -900, 200, 10, -0.07], [-1300, 150, 1100, 180, 9, 0.06]] }, // x,y,z,radius,n,speed
     };
   })(),
   fuego: (() => {
@@ -93,10 +97,16 @@ const WORLDS = {
       JUNGLE2 = new THREE.Color(0x4c7d27), DARK = new THREE.Color(0x1d1a19), SAND = new THREE.Color(0x1c1a1a), SCORCH = new THREE.Color(0x140b08),
       EMBER = new THREE.Color(0x6a1d08), VERGE = new THREE.Color(0x3d3631), tmp = new THREE.Color();
     return {
-      id: 'fuego', name: 'Fuego', tagline: 'Virtual cycling · Fuego volcano', points: 48, kom: [[0.08, 0.34], [0.3, 0.55]],
-      // long traversing climb up the flank (wide side of the dip), quicker descent on the far side
-      radius: (a) => { const d = angDist(a, FUEGO_A0); return 1880 + 70 * Math.sin(3 * a + 1) + 40 * Math.sin(7 * a) - 820 * Math.exp(-((d / (d < 0 ? 1.35 : 0.85)) ** 2)); },
-      elev: (t, x, z) => Math.max(14, cone(Math.hypot(x, z))) + rollers(t),
+      id: 'fuego', name: 'Fuego', tagline: 'Virtual cycling · Fuego volcano', points: 48, kom: [[0.6, 0.9], [0.8, 1]],
+      // the lap starts in a cavern deep inside the volcano (bearing 0): tunnel out, descend to the coast,
+      // ride around the island, then climb back up the flank and through the mountain to the finish
+      radius: (a) => { const d = angDist(a, 0); return 1880 + 70 * Math.sin(3 * a + 1) + 40 * Math.sin(7 * a) - 1380 * Math.exp(-((d / (d < 0 ? 0.85 : 0.7)) ** 2)); },
+      // outside the mountain the road hugs the (later smoothed) ground; inside it follows the tunnel profile
+      elev: (t, x, z) => {
+        const r = Math.hypot(x, z);
+        return r >= FUEGO_RP ? Math.max(14, WORLDS.fuego.height(x, z) + 1.5) : lerp(cone(FUEGO_RP), FUEGO_CAVE, smooth(FUEGO_RP, 600, r));
+      },
+      smoothElev: 70, tunnels: true, chamber: 150,
       height: (x, z) => {
         const r = Math.hypot(x, z), a = Math.atan2(z, x);
         let h = cone(r) + 320 * Math.exp(-((r / 560) ** 2)); // steep upper cone; negligible where the road runs
@@ -116,10 +126,12 @@ const WORLDS = {
         c.lerp(EMBER, smooth(16, 5, lava) * 0.7);
         c.lerp(VERGE, smooth(16, 8, d) * 0.55);
       },
-      rivers: [[4.9, 1580, 1], [5.75, 1640, 2], [0.45, 1560, 3]], // [bearing, end radius, seed]
+      rivers: [[2.3, 1580, 1], [3.2, 1640, 2], [4.05, 1560, 3]], // [bearing, end radius, seed]
+      sea: { deep: 0x0a2d45, shallow: 0x2a8f8a }, sprint: [0.46, 0.51], pu: [0.24, 0.68],
+      birds: { color: 0x1c1a1a, flocks: [[0, 80, 2150, 160, 10, 0.06], [-2150, 70, 0, 140, 9, -0.05], [0, 90, -2150, 170, 11, 0.05], [1600, 260, 900, 220, 8, -0.04]] },
       crater: { y: WORLD_CRATER_FLOOR + 3, r: 182 },
       sky: { elev: 7, azim: 250, turbidity: 10, rayleigh: 3, mie: 0.003, mieG: 0.8 },
-      fog: [0x9c7a6c, 0.00026], exposure: 0.7, env: 0.45, hemi: [0xffc8a0, 0x2a1e1a, 0.6], sun: [0xffa868, 3.2],
+      fog: [0x9c7a6c, 0.00026], exposure: 0.85, env: 0.5, hemi: [0xffc8a0, 0x3a2a24, 0.8], sun: [0xffa868, 3.2],
       water: 0x0d3550, verge: 0x3b3430, clouds: [0.05, 0.6], bloom: [0.6, 0.45, 2.2], // [strength, radius, HDR threshold]
       mini: [[0, '#ff7a2a'], [0.08, '#7a2a12'], [0.16, '#3a302c'], [0.55, '#2e3a25'], [0.72, '#123a52'], [1, '#0b2a3d']],
     };
@@ -144,6 +156,31 @@ const C = (() => {
   let L = 0;
   for (let i = 0; i <= M; i++) { X[i] = sp[i].x; Z[i] = sp[i].z; if (i) L += Math.hypot(X[i] - X[i - 1], Z[i] - Z[i - 1]); }
   for (let i = 0; i <= M; i++) Y[i] = WORLD.elev((i % M) / M, X[i % M], Z[i % M]);
+  if (WORLD.smoothElev) { // circular box blur, three passes ≈ gaussian over ±smoothElev samples
+    const w = WORLD.smoothElev, tmp = new Float32Array(M);
+    for (let pass = 0; pass < 3; pass++) {
+      let acc = 0;
+      for (let k = -w; k <= w; k++) acc += Y[mod(k, M)];
+      for (let i = 0; i < M; i++) { tmp[i] = acc / (2 * w + 1); acc += Y[mod(i + w + 1, M)] - Y[mod(i - w, M)]; }
+      Y.set(tmp); Y[M] = Y[0];
+    }
+  }
+  // tunnels wherever the ground rises well above the road; short gaps are closed and stubs dropped
+  const T = new Uint8Array(M + 1), Dp = new Float32Array(M + 1), runs = [];
+  const runsOf = (v) => {
+    const start = T.findIndex((x, i) => i < M && x !== T[(i - 1 + M) % M]), out = [];
+    if (start < 0) return T[0] === v ? [[0, M]] : [];
+    for (let n = 0; n < M;) { const i = (start + n) % M, val = T[i]; let len = 0; while (n + len < M && T[(i + len) % M] === val) len++; if (val === v) out.push([i, len]); n += len; }
+    return out;
+  };
+  if (WORLD.tunnels) {
+    for (let i = 0; i < M; i++) T[i] = WORLD.height(X[i], Z[i]) - Y[i] > 14 ? 1 : 0;
+    for (const [i, len] of runsOf(0)) if (len < 30) for (let k = 0; k < len; k++) T[(i + k) % M] = 1;
+    for (const [i, len] of runsOf(1)) if (len < 40) for (let k = 0; k < len; k++) T[(i + k) % M] = 0;
+    for (const [i, len] of runsOf(1)) { runs.push([i - 3, len + 6]); for (let k = 0; k < len; k++) Dp[(i + k) % M] = (Math.min(k, len - 1 - k) * L) / M; }
+    T[M] = T[0]; Dp[M] = Dp[0];
+  }
+  const chamber = (i) => (T[i] && WORLD.chamber ? smooth(WORLD.chamber + 80, WORLD.chamber, (Math.min(i, M - i) * L) / M) : 0);
   for (let i = 0; i <= M; i++) {
     const a = i % M;
     let p = Math.atan2(X[a + 1] - X[a], Z[a + 1] - Z[a]);
@@ -158,22 +195,22 @@ const C = (() => {
   }
   const [[s0, s1], [e0, e1]] = WORLD.kom;
   let kS = Math.floor(M * s0), kE = Math.floor(M * e0);
-  for (let i = kS; i < M * s1; i++) if (Y[i] < Y[kS]) kS = i;
-  for (let i = kE; i < M * e1; i++) if (Y[i] > Y[kE]) kE = i;
+  for (let i = kS; i < M * s1; i++) if (!T[i] && Y[i] < Y[kS]) kS = i;
+  for (let i = kE; i < M * e1; i++) if (!T[i] && (T[kE] || Y[i] > Y[kE])) kE = i;
   const at = (s, o) => {
     const f = (mod(s, L) / L) * M, i = Math.min(M - 1, f | 0), u = f - i;
     o.x = lerp(X[i], X[i + 1], u); o.y = lerp(Y[i], Y[i + 1], u); o.z = lerp(Z[i], Z[i + 1], u);
     o.psi = lerp(PSI[i], PSI[i + 1], u); o.grade = lerp(GR[i], GR[i + 1], u); o.k = lerp(K[i], K[i + 1], u);
     return o;
   };
-  return { X, Y, Z, PSI, GR, K, L, at, komS: (kS / M) * L, komE: (kE / M) * L };
+  return { X, Y, Z, PSI, GR, K, L, at, T, D: Dp, runs, chamber, komS: (kS / M) * L, komE: (kE / M) * L };
 })();
 const L = C.L;
 const SEGS = [
   { id: 'kom', name: 'KOM', icon: '⛰', start: C.komS, end: C.komE, color: '#e3242b', best: [] },
-  { id: 'sprint', name: 'SPRINT', icon: '⚡', start: 0.915 * L, end: 0.972 * L, color: '#18c26b', best: [] },
+  { id: 'sprint', name: 'SPRINT', icon: '⚡', start: WORLD.sprint[0] * L, end: WORLD.sprint[1] * L, color: '#18c26b', best: [] },
 ];
-const PU_ARCHES = [0.12 * L, 0.63 * L];
+const PU_ARCHES = WORLD.pu.map((f) => f * L);
 const POWERUPS = {
   feather: { icon: '🪶', name: 'FEATHERWEIGHT', dur: 15, desc: '-9 kg for 15s' },
   aero: { icon: '💨', name: 'AERO BOOST', dur: 15, desc: '-25% drag for 15s' },
@@ -186,6 +223,7 @@ const TOUCH = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoint
 if (TOUCH) document.body.classList.add('touch');
 const buzz = (p) => navigator.vibrate?.(p); // haptics (Android; iOS Safari has no vibration API)
 const FS_OK = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+const LOW = new URLSearchParams(location.search).get('quality') === 'low'; // weak GPUs / software renderers: no grass, bloom or big shadow maps
 renderer.setPixelRatio(Math.min(devicePixelRatio, TOUCH ? 1.5 : 1.75));
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -230,17 +268,18 @@ sky.material.uniforms.sunPosition.value.copy(sunDir);
 }
 scene.environmentIntensity = WORLD.env;
 scene.fog = new THREE.FogExp2(...WORLD.fog);
-scene.add(new THREE.HemisphereLight(...WORLD.hemi));
+const hemi = new THREE.HemisphereLight(...WORLD.hemi);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(...WORLD.sun);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.setScalar(LOW ? 1024 : 2048);
 Object.assign(sun.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60, near: 10, far: 900 });
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.05;
 scene.add(sun, sun.target);
 // bloom (worlds that glow): render to an MSAA half-float target, OutputPass does tone mapping
 let composer = null;
-if (WORLD.bloom) {
+if (WORLD.bloom && !LOW) {
   const pr = renderer.getPixelRatio();
   composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth * pr, innerHeight * pr, { type: THREE.HalfFloatType, samples: 4 }));
   composer.addPass(new RenderPass(scene, camera));
@@ -250,7 +289,7 @@ if (WORLD.bloom) {
 
 // ============================================================ terrain
 const T_SIZE = 6400, T_SEG = 640, CELL = T_SIZE / T_SEG, TN = T_SEG + 1, HALF = T_SIZE / 2, ROAD_R = 150;
-const tH = new Float32Array(TN * TN), rD = new Float32Array(TN * TN).fill(1e12), rE = new Float32Array(TN * TN);
+const tH = new Float32Array(TN * TN), rD = new Float32Array(TN * TN).fill(1e12), rE = new Float32Array(TN * TN), rI = new Int32Array(TN * TN);
 const natH = (x, z) => WORLD.height(x, z);
 // lava rivers: from the crater lake through a breach in the rim, down the flank; surface only ever descends
 const RIVERS = (WORLD.rivers || []).map(([a0, rEnd, seed]) => {
@@ -274,11 +313,13 @@ function getH(x, z) {
   const ix = fx | 0, iz = fz | 0, u = fx - ix, v = fz - iz, k = iz * TN + ix;
   return lerp(lerp(tH[k], tH[k + 1], u), lerp(tH[k + TN], tH[k + TN + 1], u), v);
 }
-const roadDist = (x, z) => {
-  const ix = Math.round((x + HALF) / CELL), iz = Math.round((z + HALF) / CELL);
-  return ix < 0 || iz < 0 || ix >= TN || iz >= TN ? 1e6 : Math.sqrt(rD[iz * TN + ix]);
-};
+const cellOf = (x, z) => { const ix = Math.round((x + HALF) / CELL), iz = Math.round((z + HALF) / CELL); return ix < 0 || iz < 0 || ix >= TN || iz >= TN ? -1 : iz * TN + ix; };
+const roadDist = (x, z) => { const k = cellOf(x, z); return k < 0 ? 1e6 : Math.sqrt(rD[k]); };
+// course sample index if (x,z) is inside a tunnel (within 30 m of its road), else -1
+const tunnelAt = (x, z) => { const k = cellOf(x, z); return k >= 0 && rD[k] < 900 && C.T[rI[k]] ? rI[k] : -1; };
+const groundAt = (x, z) => { const i = tunnelAt(x, z); return i >= 0 ? C.Y[i] - 0.8 : getH(x, z); };
 
+const grassTint = new Uint8Array(TN * TN * 4);
 function buildTerrain() {
   const RC = Math.ceil(ROAD_R / CELL);
   for (let i = 0; i < M; i++) {
@@ -286,7 +327,7 @@ function buildTerrain() {
     for (let gz = Math.max(0, cz - RC); gz <= Math.min(T_SEG, cz + RC); gz++) {
       for (let gx = Math.max(0, cx - RC); gx <= Math.min(T_SEG, cx + RC); gx++) {
         const k = gz * TN + gx, dx = gx * CELL - HALF - C.X[i], dz = gz * CELL - HALF - C.Z[i], d = dx * dx + dz * dz;
-        if (d < rD[k]) { rD[k] = d; rE[k] = C.Y[i]; }
+        if (d < rD[k]) { rD[k] = d; rE[k] = C.Y[i]; rI[k] = i; }
       }
     }
   }
@@ -300,7 +341,14 @@ function buildTerrain() {
   for (let iz = 0; iz < TN; iz++) for (let ix = 0; ix < TN; ix++) {
     const k = iz * TN + ix, d = Math.sqrt(rD[k]);
     let h = natH(ix * CELL - HALF, iz * CELL - HALF);
-    if (d < ROAD_R) h = lerp(rE[k] - 0.7, h, smooth(9, ROAD_R * 0.9, d));
+    if (d < ROAD_R) {
+      const i = rI[k];
+      if (C.T[i]) { // rock over the tunnel: a rounded, rough ridge rather than a flat plateau
+        const ts = tunnelSize(C.chamber(i)), p = clamp(1 - (d / (ts.w + 50)) ** 2, 0, 1), x = ix * CELL - HALF, z = iz * CELL - HALF;
+        h = Math.max(h, rE[k] + (ts.h + 6) * Math.sqrt(p) + fbm(x / 35, z / 35, 3) * 6 * p);
+      }
+      else h = lerp(rE[k] - 0.7, h, smooth(9, ROAD_R * 0.9, d));
+    }
     if (lD && lD[k] < 1e11) { // carve the lava channel with raised levees
       const ld = Math.sqrt(lD[k]), w = lW[k], bed = lE[k] - 1.4;
       h = ld < w ? bed : lerp(bed, h + 3 * Math.exp(-(((ld - w - 6) / 6) ** 2)), smooth(w, w + 32, ld));
@@ -316,17 +364,15 @@ function buildTerrain() {
   geo.computeVertexNormals();
   const nrm = geo.attributes.normal, col = new Float32Array(pos.count * 3), c = new THREE.Color();
   for (let k = 0; k < pos.count; k++) {
-    const x = pos.getX(k), z = pos.getZ(k);
-    WORLD.color(c, x, z, pos.getY(k), nrm.getY(k), roadDist(x, z), lavaDist(x, z));
+    const x = pos.getX(k), z = pos.getZ(k), h = pos.getY(k), ny = nrm.getY(k), d = roadDist(x, z);
+    WORLD.color(c, x, z, h, ny, d, lavaDist(x, z));
     col[k * 3] = c.r; col[k * 3 + 1] = c.g; col[k * 3 + 2] = c.b;
+    // grass: green-dominant ground off the road, not too steep, above the waterline
+    const g = cellOf(x, z) * 4, dens = clamp((c.g - Math.max(c.r, c.b)) * 9, 0, 1) * smooth(8, 11, d) * smooth(1.5, 2.5, h) * smooth(0.78, 0.9, ny);
+    grassTint[g] = clamp(c.r * 1.2, 0, 1) * 255; grassTint[g + 1] = clamp(c.g * 1.25, 0, 1) * 255; grassTint[g + 2] = clamp(c.b * 1.1, 0, 1) * 255; grassTint[g + 3] = dens * 255;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  const detail = canvasTex(256, 256, (g, w, h) => {
-    g.fillStyle = '#e6e6e6'; g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 9000; i++) { const v = 170 + rand() * 85 | 0; g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(rand() * w, rand() * h, 1 + rand() * 2, 1 + rand() * 3); }
-  }, true);
-  detail.repeat.set(T_SIZE / 14, T_SIZE / 14);
-  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, map: detail, roughness: 0.96 }));
+  const mesh = new THREE.Mesh(geo, terrainMaterial(canvasTex, rand));
   mesh.receiveShadow = true;
   scene.add(mesh);
 }
@@ -387,7 +433,7 @@ function buildWater() {
   }, true, false);
   waterTex.repeat.set(500, 500);
   const water = new THREE.Mesh(new THREE.PlaneGeometry(T_SIZE * 2, T_SIZE * 2).rotateX(-Math.PI / 2),
-    new THREE.MeshStandardMaterial({ color: WORLD.water, roughness: 0.05, metalness: 0.25, normalMap: waterTex, normalScale: new THREE.Vector2(0.4, 0.4), transparent: true, opacity: 0.93 }));
+    waterMaterial(waterTex, seaDepthTexture(tH, TN), { ...WORLD.sea, half: HALF, size: T_SIZE }));
   water.receiveShadow = true;
   scene.add(water);
 }
@@ -434,10 +480,11 @@ function plantFuego() {
     spires.push({ x, y: h - 1, z, s, sy: s * rr(2.2, 4.5), ry: rr(0, 6), rx: rr(-0.12, 0.12), c: pick([0x2a2524, 0x342d2a, 0x231f1e]) });
   }
   const palm = palmGeometries(canvasTex), rockMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, flatShading: true });
+  addWind(palm.trunkMat, 0.0035, 'palm-trunk', 0); addWind(palm.crownMat, 0.0035, 'palm-crown');
   instanced(palm.trunk, palm.trunkMat, palms, true, false);
   instanced(palm.crown, palm.crownMat, palms);
   instanced(new THREE.CylinderGeometry(0.14, 0.22, 2.2, 6).translate(0, 1.1, 0), new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 1 }), jungle);
-  instanced(mergeGeometries([new THREE.IcosahedronGeometry(1.35, 1).translate(0, 2.9, 0), new THREE.IcosahedronGeometry(0.95, 1).translate(0.6, 3.5, 0.3), new THREE.IcosahedronGeometry(0.9, 1).translate(-0.6, 3.3, -0.2)]), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, flatShading: true }), jungle);
+  instanced(mergeGeometries([new THREE.IcosahedronGeometry(1.35, 1).translate(0, 2.9, 0), new THREE.IcosahedronGeometry(0.95, 1).translate(0.6, 3.5, 0.3), new THREE.IcosahedronGeometry(0.9, 1).translate(-0.6, 3.3, -0.2)]), addWind(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, flatShading: true }), 0.006, 'jungle'), jungle);
   instanced(deadTreeGeometry(), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true }), dead);
   instanced(new THREE.IcosahedronGeometry(0.9, 1), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true }), bushes);
   instanced(new THREE.DodecahedronGeometry(1, 0), rockMat, rocks);
@@ -468,7 +515,7 @@ function plantVerde() {
     rocks.push({ x, y: h - s * 0.3, z, s, sy: s * rr(0.5, 0.9), sx: s * rr(0.8, 1.4), ry: rr(0, 6), rx: rr(-0.3, 0.3), c: pick([0x8a857c, 0x7a756d, 0x9b958a]) });
   }
   const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5b4330, roughness: 1 });
-  const leafMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true });
+  const leafMat = addWind(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true }), 0.006, 'leaf');
   const pineLeaf = mergeGeometries([new THREE.ConeGeometry(1.15, 1.9, 8).translate(0, 2.0, 0), new THREE.ConeGeometry(0.9, 1.6, 8).translate(0, 2.9, 0), new THREE.ConeGeometry(0.6, 1.4, 8).translate(0, 3.7, 0)]);
   const broadLeaf = mergeGeometries([new THREE.IcosahedronGeometry(1.35, 1).translate(0, 2.9, 0), new THREE.IcosahedronGeometry(0.95, 1).translate(0.6, 3.5, 0.3), new THREE.IcosahedronGeometry(0.9, 1).translate(-0.6, 3.3, -0.2)]);
   instanced(new THREE.CylinderGeometry(0.12, 0.2, 1.4, 6).translate(0, 0.7, 0), trunkMat, pines);
@@ -538,7 +585,7 @@ function buildCrowd() {
     for (let s = s0; s < s1; s += 2.3) for (const side of [-1, 1]) {
       C.at(s, tmpP);
       const lat = side * (ROAD_W / 2 + 0.6), x = tmpP.x - Math.cos(tmpP.psi) * lat, z = tmpP.z + Math.sin(tmpP.psi) * lat, ry = tmpP.psi + (side > 0 ? Math.PI / 2 : -Math.PI / 2);
-      list.push({ x, y: tmpP.y + 0.5, z, s: 1, ry }); backs.push({ x: x + Math.cos(tmpP.psi) * side * 0.06, y: tmpP.y + 0.5, z: z - Math.sin(tmpP.psi) * side * 0.06, s: 1, ry });
+      list.push({ x, y: tmpP.y + 0.5, z, s: 1, ry }); backs.push({ x: x - Math.cos(tmpP.psi) * side * 0.08, y: tmpP.y + 0.5, z: z + Math.sin(tmpP.psi) * side * 0.08, s: 1, ry }); // backing sits behind the banner
     }
   };
   const fin = [], kom = [];
@@ -554,13 +601,22 @@ function buildCrowd() {
       const s = rr(s0, s1), side = rand() < 0.5 ? -1 : 1, lat = side * (ROAD_W / 2 + 1.5 + rand() * 4);
       C.at(s, tmpP);
       const x = tmpP.x - Math.cos(tmpP.psi) * lat, z = tmpP.z + Math.sin(tmpP.psi) * lat;
-      spots.push({ x, z, y: getH(x, z), ph: rand() * 6.28, h: rr(0.9, 1.1), c: pick([0xe3242b, 0xfc6719, 0x1e63d6, 0xffd400, 0xffffff, 0x18c26b, 0x222222, 0xff5ea8]), skin: pick([0xf1c7a5, 0xd9a07a, 0x9a6440, 0x6e4529]), s });
+      spots.push({ x, z, y: groundAt(x, z), ry: tmpP.psi + (side > 0 ? -Math.PI / 2 : Math.PI / 2) + rr(-0.5, 0.5), ph: rand() * 6.28, h: rr(0.9, 1.1), c: pick([0xe3242b, 0xfc6719, 0x1e63d6, 0xffd400, 0xffffff, 0x18c26b, 0x222222, 0xff5ea8]), skin: pick([0xf1c7a5, 0xd9a07a, 0x9a6440, 0x6e4529]), s });
     }
   };
   addPeople(SEGS[0].end - 110, SEGS[0].end + 15, 160);
   addPeople(L - 150, L + 20, 140);
-  const body = new THREE.InstancedMesh(new THREE.CapsuleGeometry(0.22, 0.85, 4, 8), new THREE.MeshStandardMaterial({ roughness: 0.8 }), spots.length);
-  const head = new THREE.InstancedMesh(new THREE.SphereGeometry(0.14, 10, 8), new THREE.MeshStandardMaterial({ roughness: 0.7 }), spots.length);
+  // low-poly fan, origin at the feet, facing +Z: dark trousers, shirt-coloured torso and raised arms; skin is a second mesh
+  const part = (geo, shade, m) => { geo.applyMatrix4(m); const n = geo.attributes.position.count; geo.setAttribute('color', new THREE.Float32BufferAttribute(new Array(n * 3).fill(shade), 3)); return geo; };
+  const T = (x, y, z, rz = 0, sx = 1, sz = 1) => new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, rz)), new THREE.Vector3(sx, 1, sz));
+  const cloth = mergeGeometries([
+    part(new THREE.CapsuleGeometry(0.08, 0.72, 3, 8), 0.22, T(0.1, 0.45, 0)), part(new THREE.CapsuleGeometry(0.08, 0.72, 3, 8), 0.22, T(-0.1, 0.45, 0)),
+    part(new THREE.CapsuleGeometry(0.17, 0.36, 4, 10), 1, T(0, 1.13, 0, 0, 1.2, 0.72)),
+    part(new THREE.CapsuleGeometry(0.052, 0.5, 3, 6), 1, T(0.31, 1.58, 0, -0.55)), part(new THREE.CapsuleGeometry(0.052, 0.5, 3, 6), 1, T(-0.31, 1.58, 0, 0.55)),
+  ]);
+  const skinGeo = mergeGeometries([new THREE.SphereGeometry(0.11, 12, 9).translate(0, 1.6, 0.01), new THREE.SphereGeometry(0.045, 6, 5).translate(0.46, 1.86, 0), new THREE.SphereGeometry(0.045, 6, 5).translate(-0.46, 1.86, 0)]);
+  const body = new THREE.InstancedMesh(cloth, new THREE.MeshStandardMaterial({ roughness: 0.85, vertexColors: true }), spots.length);
+  const head = new THREE.InstancedMesh(skinGeo, new THREE.MeshStandardMaterial({ roughness: 0.6 }), spots.length);
   const c = new THREE.Color();
   spots.forEach((p, i) => { body.setColorAt(i, c.set(p.c)); head.setColorAt(i, c.set(p.skin)); });
   body.castShadow = head.castShadow = true;
@@ -572,8 +628,8 @@ function updateCrowd(t) {
   const near = (s) => player && Math.abs(mod(player.dist - s + L / 2, L) - L / 2) < 120 ? 1 : 0.25;
   spots.forEach((p, i) => {
     const j = Math.max(0, Math.sin(t * 9 + p.ph)) * 0.3 * near(p.s);
-    o.position.set(p.x, p.y + 0.65 * p.h + j, p.z); o.scale.setScalar(p.h); o.updateMatrix(); body.setMatrixAt(i, o.matrix);
-    o.position.y += 0.72 * p.h; o.updateMatrix(); head.setMatrixAt(i, o.matrix);
+    o.position.set(p.x, p.y + j, p.z); o.rotation.set(0, p.ry, Math.sin(t * 3 + p.ph) * 0.06); o.scale.setScalar(p.h); o.updateMatrix();
+    body.setMatrixAt(i, o.matrix); head.setMatrixAt(i, o.matrix);
   });
   body.instanceMatrix.needsUpdate = head.instanceMatrix.needsUpdate = true;
 }
@@ -717,7 +773,7 @@ function placeRider(r, dt, camPos) {
 }
 
 // ============================================================ simulation
-const game = { state: 'loading', time: 0, race: false, laps: 0, raceDist: 0, cam: 0, paused: false, finished: false, countdown: 0, energy: 0, rideTime: 0, elev: 0, hudT: 0, rideOnT: 40, muted: false, hideHelp: false };
+const game = { tf: 0, shake: 0, state: 'loading', time: 0, race: false, laps: 0, raceDist: 0, cam: 0, paused: false, finished: false, countdown: 0, energy: 0, rideTime: 0, elev: 0, hudT: 0, rideOnT: 40, muted: false, hideHelp: false };
 const input = { target: 200, manualT: 0, sprint: false };
 const BT = { power: null, powerAt: 0, cad: null, hr: null, hrAt: 0, cp: null, lastGrade: 1e9, busy: false, crank: null, lastSend: 0 };
 
@@ -878,8 +934,8 @@ const CAMS = ['CHASE CAM', 'CLOSE CAM', 'SIDE CAM', 'FRONT CAM', 'HELICOPTER', '
 const camPos = new THREE.Vector3(0, 60, 0), camLook = new THREE.Vector3(), _cp = new THREE.Vector3(), _cl = new THREE.Vector3();
 function updateCamera(dt, t) {
   if (game.state === 'menu' || !player) {
-    const s = t * 22, p = C.at(s, {}), q = C.at(s + 90, {});
-    _cp.set(p.x - Math.cos(p.psi) * 26, p.y + 16, p.z + Math.sin(p.psi) * 26);
+    const s = t * 22, p = C.at(s, {}), q = C.at(s + 90, {}), i = Math.floor((mod(s, L) / L) * M), inside = C.T[i] ? 1 - C.chamber(i) * 0.6 : 0;
+    _cp.set(p.x - Math.cos(p.psi) * lerp(26, 3, inside), p.y + lerp(16, 4, inside), p.z + Math.sin(p.psi) * lerp(26, 3, inside));
     _cl.set(q.x, q.y + 4, q.z);
   } else {
     const b = player.group.position, psi = player.pos.psi, fx = Math.sin(psi), fz = Math.cos(psi), rx = -Math.cos(psi), rz = Math.sin(psi);
@@ -895,7 +951,9 @@ function updateCamera(dt, t) {
   }
   const k = 1 - Math.exp(-dt * (game.cam === 0 ? 4.5 : 7));
   camPos.lerp(_cp, k); camLook.lerp(_cl, k);
-  camPos.y = Math.max(camPos.y, getH(camPos.x, camPos.z) + 0.8);
+  const ti = tunnelAt(camPos.x, camPos.z);
+  if (ti >= 0) camPos.y = clamp(camPos.y, C.Y[ti] + 0.6, C.Y[ti] + tunnelSize(C.chamber(ti)).h - 3);
+  else camPos.y = Math.max(camPos.y, getH(camPos.x, camPos.z) + 0.8);
   camera.position.copy(camPos);
   camera.lookAt(camLook);
   const fov = 60 + (player ? clamp(player.v * 0.45, 0, 14) : 0);
@@ -933,6 +991,8 @@ function initProfile() {
   g.stroke();
   g.fillStyle = '#fff';
   for (const s of PU_ARCHES) g.fillRect((s / L) * W - dpr, 0, 2 * dpr, H);
+  g.fillStyle = 'rgba(0,0,0,.45)';
+  for (let x = 0; x < W; x++) if (C.T[Math.floor((x / W) * M)]) g.fillRect(x, 0, 1, H);
 }
 function drawProfile() {
   const c = prof.c, g = c.getContext('2d'), W = c.width, dpr = W / c.clientWidth;
@@ -954,8 +1014,9 @@ function initMinimap() {
   const g = mm.bg.getContext('2d');
   const grd = g.createRadialGradient(W / 2, W / 2, 10, W / 2, W / 2, W / 1.4); for (const [o, col] of WORLD.mini) grd.addColorStop(o, col);
   g.fillStyle = grd; g.fillRect(0, 0, W, W);
-  const path = (i0, i1, col, w) => { g.strokeStyle = col; g.lineWidth = w; g.lineCap = 'round'; g.beginPath(); for (let i = i0; i <= i1; i++) g.lineTo(...mm.p(C.X[i % M], C.Z[i % M])); g.stroke(); };
+  const path = (i0, i1, col, w) => { g.strokeStyle = col; g.lineWidth = w; g.lineCap = 'round'; g.beginPath(); for (let i = i0; i <= i1; i++) g.lineTo(...mm.p(C.X[mod(i, M)], C.Z[mod(i, M)])); g.stroke(); };
   path(0, M, 'rgba(0,0,0,.5)', 14); path(0, M, '#e9ecef', 7);
+  g.setLineDash([6, 6]); for (const [i, len] of C.runs) path(i, i + len, '#3a3530', 7); g.setLineDash([]);
   for (const sg of SEGS) path(Math.floor((sg.start / L) * M), Math.floor((sg.end / L) * M), sg.color, 7);
   const [sx, sz] = mm.p(C.X[0], C.Z[0]); g.fillStyle = '#fff'; g.strokeStyle = '#111'; g.lineWidth = 3; g.beginPath(); g.arc(sx, sz, 8, 0, 7); g.fill(); g.stroke();
 }
@@ -1064,6 +1125,22 @@ function initAudio() {
   osc.type = 'square'; hp.type = 'highpass'; hp.frequency.value = 1400; g.gain.value = 0;
   osc.connect(hp).connect(g).connect(audio.master); osc.start();
   audio.hub = { osc, g };
+  audio.rumble = noise('lowpass', 70, 0.7, 0.5);
+  audio.noiseBuf = buf;
+  // cave reverb: synthetic decaying-noise impulse, faded in while inside a tunnel
+  const ir = ctx.createBuffer(2, ctx.sampleRate * 2.4, ctx.sampleRate);
+  for (let c = 0; c < 2; c++) { const ch = ir.getChannelData(c); for (let i = 0; i < ch.length; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / ch.length, 3); }
+  const conv = ctx.createConvolver(); conv.buffer = ir;
+  audio.wet = ctx.createGain(); audio.wet.gain.value = 0;
+  audio.master.connect(conv).connect(audio.wet).connect(ctx.destination);
+}
+function thunder(dist) {
+  if (!audio.ctx || game.muted) return;
+  const ctx = audio.ctx, t0 = ctx.currentTime + dist / 343, s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  s.buffer = audio.noiseBuf; f.type = 'lowpass'; f.frequency.value = 260;
+  const v = clamp(1.2 - dist / 4000, 0.15, 0.9);
+  g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(v, t0 + 0.05); g.gain.exponentialRampToValueAtTime(0.001, t0 + 3.5);
+  s.connect(f).connect(g).connect(audio.master); s.start(t0, Math.random()); s.stop(t0 + 3.6);
 }
 function updateAudio() {
   if (!audio.ctx || !player) return;
@@ -1076,6 +1153,8 @@ function updateAudio() {
   audio.hub.osc.frequency.setTargetAtTime((v / (2 * Math.PI * WHEEL_R)) * 36, t, 0.1);
   const dCrowd = Math.min(...[SEGS[0].end, L].map((s) => Math.abs(mod(player.dist - s + L / 2 + 50, L) - L / 2)));
   audio.crowd.g.gain.setTargetAtTime(clamp(1 - dCrowd / 140, 0, 1) * 0.16, t, 0.3);
+  audio.rumble.g.gain.setTargetAtTime(Math.min(0.9, game.shake * 0.8), t, 0.2);
+  audio.wet.gain.setTargetAtTime(game.tf * 0.55, t, 0.3);
 }
 function chime(freqs) {
   buzz(freqs.length > 2 ? [25, 40, 25] : 14);
@@ -1357,7 +1436,8 @@ function adaptResolution(raw) {
 
 // ============================================================ main loop
 const clock = new THREE.Clock();
-let elapsed = 0, volcanoFX = null;
+let elapsed = 0, volcanoFX = null, tunnelFX = null, birdsFX = null;
+const FOG_BASE = new THREE.Color(WORLD.fog[0]), FOG_CAVE = new THREE.Color(0x1a1412);
 function loop() {
   requestAnimationFrame(loop);
   const raw = clock.getDelta(), dt = Math.min(raw, 0.05);
@@ -1373,9 +1453,23 @@ function loop() {
   if (waterTex) waterTex.offset.set(elapsed * 0.0012, elapsed * 0.0008);
   if (clouds) clouds.rotation.y = elapsed * 0.002;
   if (crowd) updateCrowd(elapsed);
+  U.time.value = elapsed; U.cam.value.copy(camera.position);
+  birdsFX?.(elapsed);
+  tunnelFX?.(dt, elapsed, camera.position);
+  game.shake = volcanoFX?.(dt, elapsed, camera.position) ?? 0;
+  // eye adaptation: dim ambient/sky light inside tunnels and let exposure catch up with a lag
+  const ti = tunnelAt(camera.position.x, camera.position.z);
+  game.tf += ((ti >= 0 ? smooth(3, 45, C.D[ti]) : 0) - game.tf) * Math.min(1, dt * 3);
+  hemi.intensity = WORLD.hemi[2] * (1 - 0.93 * game.tf);
+  scene.environmentIntensity = WORLD.env * (1 - 0.9 * game.tf);
+  scene.fog.color.copy(FOG_BASE).lerp(FOG_CAVE, game.tf);
+  renderer.toneMappingExposure += (WORLD.exposure * (1 + 1.5 * game.tf) - renderer.toneMappingExposure) * Math.min(1, dt * 1.2);
+  if (game.shake > 0.01 && !game.camLock) { // eruption tremor, stronger inside the mountain
+    const a = game.shake * 0.2 * (1 + game.tf) * clamp(1.4 - Math.hypot(camera.position.x, camera.position.z) / 3000, 0.25, 1);
+    camera.position.x += (Math.random() - 0.5) * a; camera.position.y += (Math.random() - 0.5) * a; camera.position.z += (Math.random() - 0.5) * a;
+  }
   if (player && (game.hudT -= dt) <= 0) { game.hudT = 0.1; updateHUD(); drawProfile(); drawMinimap(); }
   updateAudio();
-  volcanoFX?.(dt, elapsed);
   if (composer) composer.render(); else renderer.render(scene, camera);
   labels.render(scene, camera);
 }
@@ -1386,9 +1480,16 @@ async function init() {
   await msg(`Sculpting ${WORLD.name}`); buildTerrain();
   await msg('Paving roads'); buildRoad(); buildWater();
   await msg(WORLD.id === 'fuego' ? 'Igniting the volcano' : 'Planting forests'); buildVegetation();
+  if (!LOW) scene.add(makeGrass({ heights: tH, tn: TN, cell: CELL, half: HALF, size: T_SIZE, tint: grassTint, grid: TOUCH ? 150 : 220, spacing: 0.55 }));
+  birdsFX = makeBirds(scene, WORLD.birds.flocks.map(([x, y, z, r, n, speed]) => ({ c: new THREE.Vector3(x, y, z), r, n, speed })), WORLD.birds.color, rand);
+  if (C.runs.length) { await msg('Boring tunnels'); tunnelFX = buildTunnels({ scene, C, M, runs: C.runs, chamber: C.chamber, lava: WORLD.id === 'fuego', canvasTex, rand }); }
   if (WORLD.id === 'fuego') {
-    const vents = [0.21, 0.28, 0.34, 0.38].map((f, i) => { C.at(f * L, tmpP); const lat = (i % 2 ? -1 : 1) * (ROAD_W / 2 + 15), x = tmpP.x - Math.cos(tmpP.psi) * lat, z = tmpP.z + Math.sin(tmpP.psi) * lat; return new THREE.Vector3(x, getH(x, z), z); });
-    volcanoFX = buildVolcanoFX({ scene, canvasTex, rand, rivers: RIVERS, crater: WORLD.crater, vents });
+    const vents = [520, 380, 250, 120].map((back, i) => { C.at(SEGS[0].end - back, tmpP); const lat = (i % 2 ? -1 : 1) * (ROAD_W / 2 + 15), x = tmpP.x - Math.cos(tmpP.psi) * lat, z = tmpP.z + Math.sin(tmpP.psi) * lat; return new THREE.Vector3(x, getH(x, z), z); });
+    volcanoFX = buildVolcanoFX({
+      scene, canvasTex, rand, rivers: RIVERS, crater: WORLD.crater, vents, getH,
+      onEruption: () => { if (game.state === 'ride') { toast('🌋 FUEGO IS ERUPTING', 'red', 4000); buzz([60, 40, 120]); } },
+      onThunder: (p) => thunder(p.distanceTo(camera.position)),
+    });
   }
   await msg('Building arches'); buildArches(); buildCrowd(); buildClouds(); buildRiderGeo();
   await msg('Ready');
@@ -1426,5 +1527,9 @@ if (navigator.bluetooth) { $('m-trainer').onclick = connectTrainer; $('m-hrm').o
 else { $('m-trainer').disabled = $('m-hrm').disabled = true; $('m-bt-status').textContent = `Web Bluetooth not available in this browser — ${TOUCH ? 'touch' : 'keyboard'} controls.`; }
 if (!FS_OK) $('t-fs').classList.add('hidden');
 if (TOUCH && !FS_OK && !navigator.standalone && !matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches) $('m-install').classList.remove('hidden');
-window.__game = { game, riders, C, update, input, act, setSprint, updateCamera, camera, getH, get player() { return player; } };
+window.__game = {
+  game, riders, C, update, input, act, setSprint, updateCamera, camera, getH, renderer, scene, get player() { return player; },
+  erupt: () => volcanoFX?.erupt(),
+  fastForward: (sec) => { for (let k = 0; k < sec / 0.05; k++) { elapsed += 0.05; U.time.value = elapsed; volcanoFX?.(0.05, elapsed, camera.position); } }, // world FX only
+};
 init();
