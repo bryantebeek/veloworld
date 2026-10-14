@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { initBodies, createBody, poseBody } from './body.js';
 
 // ============================================================ utils
 const $ = (id) => document.getElementById(id);
@@ -487,42 +488,21 @@ function buildRiderGeo() {
   const spokes = [];
   for (let i = 0; i < 16; i++) { const a = (i / 16) * Math.PI * 2; spokes.push(tube(v(Math.cos(a) * 0.02, Math.sin(a) * 0.02, i % 2 ? 0.02 : -0.02), v(Math.cos(a) * 0.27, Math.sin(a) * 0.27, 0), 0.0022, 0.0022, 3)); }
   GEO.spokes = mergeGeometries(spokes).rotateY(Math.PI / 2);
-  GEO.limb = new THREE.CylinderGeometry(0.75, 1, 1, 10);
-  GEO.ball = new THREE.SphereGeometry(1, 14, 10);
-  GEO.torso = new THREE.CapsuleGeometry(0.15, 0.34, 6, 14);
-  GEO.helmet = new THREE.SphereGeometry(0.13, 18, 10, 0, Math.PI * 2, 0, Math.PI * 0.55);
-  GEO.glasses = new THREE.BoxGeometry(0.18, 0.045, 0.04);
-  GEO.shoe = new THREE.BoxGeometry(0.085, 0.07, 0.27);
   GEO.crank = new THREE.CylinderGeometry(1, 1, 1, 6);
+  initBodies(canvasTex, TEAMS);
 }
 
-const TEAMS = [
-  ['#fc6719', '#ffffff'], ['#e3242b', '#111111'], ['#1e63d6', '#ffd400'], ['#11a36b', '#ffffff'], ['#151515', '#ff2d55'],
-  ['#f4f4f4', '#1e63d6'], ['#7a2be2', '#21e6c1'], ['#ffd400', '#151515'], ['#00a7e1', '#0a2a4a'], ['#ff5ea8', '#262626'], ['#0b3d2e', '#c8ff3d'],
+const TEAMS = [ // [primary, secondary, name printed on the jersey]
+  ['#fc6719', '#ffffff', 'VELOWORLD'], ['#e3242b', '#111111', 'ROSSO'], ['#1e63d6', '#ffd400', 'AZURE'], ['#11a36b', '#ffffff', 'VERDE'], ['#151515', '#ff2d55', 'NOIR'],
+  ['#f4f4f4', '#1e63d6', 'BLANC'], ['#7a2be2', '#21e6c1', 'NEBULA'], ['#ffd400', '#151515', 'SOLARIS'], ['#00a7e1', '#0a2a4a', 'GLACIER'], ['#ff5ea8', '#262626', 'FLAMINGO'], ['#0b3d2e', '#c8ff3d', 'FOREST'],
 ];
 const MAT = {
   black: new THREE.MeshStandardMaterial({ color: 0x16171b, roughness: 0.45, metalness: 0.3 }),
   tire: new THREE.MeshStandardMaterial({ color: 0x101012, roughness: 0.7 }),
   silver: new THREE.MeshStandardMaterial({ color: 0xc8ccd2, roughness: 0.25, metalness: 0.9 }),
-  shorts: new THREE.MeshStandardMaterial({ color: 0x16181d, roughness: 0.65 }),
-  glasses: new THREE.MeshStandardMaterial({ color: 0x0c0c0c, roughness: 0.05, metalness: 0.9 }),
-  skins: [0xf1c7a5, 0xe2ae88, 0xc68a62, 0x9a6440, 0x6e4529].map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.6 })),
-  shoes: [0xf6f6f6, 0x141414, 0xfc6719].map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.4 })),
 };
-const kits = new Map();
-function kitMat(i) {
-  if (!kits.has(i)) {
-    const [a, b] = TEAMS[i];
-    kits.set(i, {
-      jersey: new THREE.MeshStandardMaterial({ roughness: 0.55, map: canvasTex(64, 128, (g, w, h) => {
-        g.fillStyle = a; g.fillRect(0, 0, w, h); g.fillStyle = b; g.fillRect(0, h * 0.3, w, h * 0.12); g.fillRect(0, h * 0.46, w, h * 0.03); g.fillRect(0, h * 0.86, w, h * 0.14);
-      }) }),
-      accent: new THREE.MeshStandardMaterial({ color: b, roughness: 0.3, metalness: 0.1 }),
-      frame: new THREE.MeshStandardMaterial({ color: a, roughness: 0.22, metalness: 0.45 }),
-    });
-  }
-  return kits.get(i);
-}
+const frames = new Map();
+const frameMat = (i) => frames.get(i) ?? frames.set(i, new THREE.MeshPhysicalMaterial({ color: TEAMS[i][0], roughness: 0.25, metalness: 0.35, clearcoat: 1, clearcoatRoughness: 0.06 })).get(i);
 
 const BOT_NAMES = [
   ['L. Andersen', 'DK'], ['M. Rossi', 'IT'], ['J. Kowalski', 'PL'], ['T. Nakamura', 'JP'], ['S. Dubois', 'FR'], ['K. Müller', 'DE'], ['A. García', 'ES'], ['B. van Dijk', 'NL'],
@@ -536,22 +516,18 @@ const riders = [];
 let player = null;
 
 function createRider(cfg) {
-  const kit = kitMat(cfg.team), skin = pick(MAT.skins), g = new THREE.Group();
+  const g = new THREE.Group();
   const add = (geo, mat, parent = g) => { const m = new THREE.Mesh(geo, mat); m.castShadow = true; parent.add(m); return m; };
-  add(GEO.frame, kit.frame); add(GEO.cockpit, MAT.black);
+  add(GEO.frame, frameMat(cfg.team)); add(GEO.cockpit, MAT.black);
   const wheels = [-0.5, 0.5].map((z) => { const w = new THREE.Group(); w.position.set(0, WHEEL_R, z); add(GEO.wheel, MAT.tire, w); add(GEO.spokes, MAT.silver, w); g.add(w); return w; });
-  const P = {
-    torso: add(GEO.torso, kit.jersey), hips: add(GEO.ball, MAT.shorts), head: add(GEO.ball, skin), helmet: add(GEO.helmet, kit.accent), glasses: add(GEO.glasses, MAT.glasses),
-    legs: [1, -1].map((side) => ({ side, thigh: add(GEO.limb, MAT.shorts), shin: add(GEO.limb, skin), knee: add(GEO.ball, skin), shoe: add(GEO.shoe, cfg.shoe ?? pick(MAT.shoes)), crank: add(GEO.crank, MAT.black) })),
-    arms: [1, -1].map((side) => ({ side, upper: add(GEO.limb, kit.jersey), fore: add(GEO.limb, skin), elbow: add(GEO.ball, skin) })),
-  };
-  P.hips.scale.set(0.17, 0.13, 0.17); P.head.scale.setScalar(0.1); P.helmet.scale.set(1, 0.95, 1.3);
-  P.legs.forEach((l) => l.knee.scale.setScalar(0.052)); P.arms.forEach((a) => a.elbow.scale.setScalar(0.04));
+  const cranks = [0, 1].map(() => add(GEO.crank, MAT.black));
+  const body = createBody({ mass: cfg.mass, team: cfg.team, skin: cfg.skin ?? Math.floor(rand() * 5), shoe: cfg.shoe ?? Math.floor(rand() * 3), teamSocks: rand() < 0.4 });
+  g.add(body.mesh);
   scene.add(g);
   const r = {
     name: cfg.name, cc: cfg.cc, isPlayer: !!cfg.isPlayer, mass: cfg.mass, ftp: cfg.ftp, w0: cfg.w0 ?? 20000,
     effort: cfg.effort ?? 0.75, aggr: cfg.aggr ?? 1, pref: cfg.lat ?? 0, phase: rand() * 100,
-    cda: 0.32 * Math.pow(cfg.mass / 75, 0.33), group: g, wheels, P,
+    cda: 0.32 * Math.pow(cfg.mass / 75, 0.33), group: g, wheels, cranks, body,
     dist: cfg.dist, prevDist: cfg.dist, lat: cfg.lat ?? 0, latTarget: cfg.lat ?? 0, v: cfg.v ?? 0, power: 0, crank: rand() * 6.28, cad: 0, stand: 0,
     draft: 0, hr: 72, segStart: {}, passT: 0, attackT: 0, nextAttack: rr(30, 200), attackPow: 1.3, pos: C.at(cfg.dist, {}), finishTime: null,
     puHeld: null, puActive: null, puT: 0, lead: null, block: null, follow: false, wantPass: false,
@@ -570,13 +546,7 @@ function createRider(cfg) {
   return r;
 }
 
-// pose: 2-bone IK in the bike's sagittal (YZ) plane
-const _H = new THREE.Vector3(), _K = new THREE.Vector3(), _F = new THREE.Vector3(), _S = new THREE.Vector3(), _E = new THREE.Vector3(), _W = new THREE.Vector3(), _B = new THREE.Vector3(), _d = new THREE.Vector3();
-function ik(H, P, L1, L2, bend, out) {
-  const dz = P.z - H.z, dy = P.y - H.y, d = Math.hypot(dz, dy) || 1e-4, dd = clamp(d, 0.05, L1 + L2 - 1e-3);
-  const uz = dz / d, uy = dy / d, a = Math.acos(clamp((L1 * L1 + dd * dd - L2 * L2) / (2 * L1 * dd), -1, 1)), ca = Math.cos(a) * L1, sa = Math.sin(a) * L1;
-  return out.set(lerp(H.x, P.x, 0.5), H.y + uy * ca + bend * uz * sa, H.z + uz * ca - bend * uy * sa);
-}
+const _B = new THREE.Vector3(), _W = new THREE.Vector3(), _d = new THREE.Vector3();
 function limb(m, a, b, rad) {
   _d.subVectors(b, a);
   const len = _d.length();
@@ -585,33 +555,8 @@ function limb(m, a, b, rad) {
   m.scale.set(rad, len, rad);
 }
 function poseRider(r) {
-  const P = r.P, st = r.stand, hipY = lerp(0.98, 1.03, st), hipZ = lerp(-0.27, -0.13, st), shY = lerp(1.36, 1.4, st), shZ = lerp(0.18, 0.3, st);
-  _H.set(0, hipY, hipZ); _S.set(0, shY, shZ);
-  P.torso.position.lerpVectors(_H, _S, 0.5);
-  P.torso.quaternion.setFromUnitVectors(UP, _d.subVectors(_S, _H).normalize());
-  P.torso.scale.set(1.22, _H.distanceTo(_S) / 0.6, 0.82);
-  P.hips.position.set(0, hipY - 0.02, hipZ - 0.03);
-  P.head.position.set(0, shY + 0.15, shZ + 0.1);
-  P.helmet.position.set(0, shY + 0.18, shZ + 0.08); P.helmet.rotation.x = 0.25;
-  P.glasses.position.set(0, shY + 0.16, shZ + 0.19);
-  for (const l of P.legs) {
-    const th = r.crank + (l.side > 0 ? Math.PI : 0);
-    _F.set(l.side * 0.12, 0.28 + 0.17 * Math.cos(th), -0.1 + 0.17 * Math.sin(th));
-    _H.set(l.side * 0.1, hipY, hipZ);
-    ik(_H, _F, 0.46, 0.46, 1, _K);
-    limb(l.thigh, _H, _K, 0.078); limb(l.shin, _K, _F, 0.052);
-    l.knee.position.copy(_K);
-    l.shoe.position.set(_F.x, _F.y + 0.035, _F.z + 0.02); l.shoe.rotation.x = Math.sin(th) * 0.18;
-    _B.set(l.side * 0.08, 0.28, -0.1); _W.set(l.side * 0.1, _F.y, _F.z);
-    limb(l.crank, _B, _W, 0.012);
-  }
-  for (const a of P.arms) {
-    _S.set(a.side * 0.18, shY, shZ); _W.set(a.side * 0.21, 0.92, 0.5);
-    ik(_S, _W, 0.3, 0.29, -1, _E);
-    _E.x = a.side * 0.22;
-    limb(a.upper, _S, _E, 0.047); limb(a.fore, _E, _W, 0.038);
-    a.elbow.position.copy(_E);
-  }
+  const J = poseBody(r.body, r.stand, r.crank);
+  J.legs.forEach((l, i) => limb(r.cranks[i], _B.set(l.side * 0.08, 0.28, -0.1), _W.set(l.side * 0.1, l.ball.y - 0.03, l.ball.z)));
 }
 
 function placeRider(r, dt, camPos) {
@@ -1085,7 +1030,7 @@ function startRide() {
   input.target = Math.round((ftp * 0.75) / 10) * 10;
   const names = BOT_NAMES.slice().sort(() => rand() - 0.5);
   const lanes = [-3, -1, 1, 3];
-  player = createRider({ name, cc: '', isPlayer: true, mass, ftp, team: 0, shoe: MAT.shoes[0], dist: -1 - 2.6, lat: game.race ? -1 : 0 });
+  player = createRider({ name, cc: '', isPlayer: true, mass, ftp, team: 0, shoe: 0, dist: -1 - 2.6, lat: game.race ? -1 : 0 });
   for (let i = 0; i < nBots; i++) {
     const m = rr(57, 88), wkg = rr(2.5, 4.7), [nm, cc] = names[i % names.length];
     let dist = 0, lat = 0, v = 0; // race grid is assigned below
@@ -1312,5 +1257,5 @@ if (navigator.bluetooth) { $('m-trainer').onclick = connectTrainer; $('m-hrm').o
 else { $('m-trainer').disabled = $('m-hrm').disabled = true; $('m-bt-status').textContent = `Web Bluetooth not available in this browser — ${TOUCH ? 'touch' : 'keyboard'} controls.`; }
 if (!FS_OK) $('t-fs').classList.add('hidden');
 if (TOUCH && !FS_OK && !navigator.standalone && !matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches) $('m-install').classList.remove('hidden');
-window.__game = { game, riders, C, update, input, act, setSprint, get player() { return player; } };
+window.__game = { game, riders, C, update, input, act, setSprint, updateCamera, get player() { return player; } };
 init();
